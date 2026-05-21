@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 type Params = Record<string, string | number>;
 type Translate = (key: string, fallback: string, params?: Params) => string;
@@ -31,7 +31,17 @@ const bundles = [
         "ui.diff": "Diff:", "ui.view": "Vista:", "ui.context": "Contexto:", "ui.wrap": "Ajuste:", "ui.tool": "Herramienta:", "ui.path": "Ruta:",
         "ui.previewWarning": "Advertencia de vista previa: {message}",
         "ui.original": "Original", "ui.updated": "Actualizado", "ui.updatedEditing": "Actualizado (editando)",
-        "ui.footerApprove": "Enter/y aprobar", "ui.footerReject": "r/Esc rechazar", "ui.footerSteer": "s orientar", "ui.footerAuto": "Shift+A auto", "ui.footerEdit": "E editar inline"
+        "ui.footerApprove": "Enter/y aprobar", "ui.footerReject": "r/Esc rechazar", "ui.footerSteer": "s orientar", "ui.footerAuto": "Shift+A auto", "ui.footerEdit": "E editar inline",
+        "ui.footerApproveAction": "aprobar", "ui.footerRejectAction": "rechazar", "ui.footerSteerAction": "orientar", "ui.footerAutoAction": "auto", "ui.footerEditAction": "editar",
+        "ui.footerCollapseAction": "contraer", "ui.footerExpandAction": "expandir",
+        "ui.steerPrompt": "¿Cómo debería cambiar {path} en su lugar?",
+        "rpc.prompt": "¿Cómo debe gestionar pi este cambio?",
+        "rpc.approve": "Aprobar",
+        "rpc.reject": "Rechazar",
+        "rpc.steer": "Orientar / solicitar cambios",
+        "rpc.editFinal": "Editar contenido final del archivo",
+        "rpc.approveAuto": "Aprobar + activar aprobación automática",
+        "rpc.editTitle": "Editar contenido final de {path}"
     }},
     { locale: "fr", namespace: "pi-show-diffs", messages: {
         "cmd.diffApproval": "Activer, désactiver ou inspecter le mode d’approbation des diffs",
@@ -50,7 +60,17 @@ const bundles = [
         "ui.diff": "Diff :", "ui.view": "Vue :", "ui.context": "Contexte :", "ui.wrap": "Retour :", "ui.tool": "Outil :", "ui.path": "Chemin :",
         "ui.previewWarning": "Avertissement d’aperçu : {message}",
         "ui.original": "Original", "ui.updated": "Mis à jour", "ui.updatedEditing": "Mis à jour (édition)",
-        "ui.footerApprove": "Enter/y approuver", "ui.footerReject": "r/Esc rejeter", "ui.footerSteer": "s orienter", "ui.footerAuto": "Shift+A auto", "ui.footerEdit": "E éditer inline"
+        "ui.footerApprove": "Enter/y approuver", "ui.footerReject": "r/Esc rejeter", "ui.footerSteer": "s orienter", "ui.footerAuto": "Shift+A auto", "ui.footerEdit": "E éditer inline",
+        "ui.footerApproveAction": "approuver", "ui.footerRejectAction": "rejeter", "ui.footerSteerAction": "orienter", "ui.footerAutoAction": "auto", "ui.footerEditAction": "modifier",
+        "ui.footerCollapseAction": "réduire", "ui.footerExpandAction": "agrandir",
+        "ui.steerPrompt": "Comment {path} doit-il changer à la place ?",
+        "rpc.prompt": "Comment pi doit-il gérer ce changement ?",
+        "rpc.approve": "Approuver",
+        "rpc.reject": "Rejeter",
+        "rpc.steer": "Orienter / demander des modifications",
+        "rpc.editFinal": "Modifier le contenu final du fichier",
+        "rpc.approveAuto": "Approuver + activer l’approbation automatique",
+        "rpc.editTitle": "Modifier le contenu final de {path}"
     }},
     { locale: "pt-BR", namespace: "pi-show-diffs", messages: {
         "cmd.diffApproval": "Ativar, desativar ou inspecionar o modo de aprovação de diffs",
@@ -69,7 +89,17 @@ const bundles = [
         "ui.diff": "Diff:", "ui.view": "Visualização:", "ui.context": "Contexto:", "ui.wrap": "Quebra:", "ui.tool": "Ferramenta:", "ui.path": "Caminho:",
         "ui.previewWarning": "Aviso de prévia: {message}",
         "ui.original": "Original", "ui.updated": "Atualizado", "ui.updatedEditing": "Atualizado (editando)",
-        "ui.footerApprove": "Enter/y aprovar", "ui.footerReject": "r/Esc rejeitar", "ui.footerSteer": "s orientar", "ui.footerAuto": "Shift+A auto", "ui.footerEdit": "E editar inline"
+        "ui.footerApprove": "Enter/y aprovar", "ui.footerReject": "r/Esc rejeitar", "ui.footerSteer": "s orientar", "ui.footerAuto": "Shift+A auto", "ui.footerEdit": "E editar inline",
+        "ui.footerApproveAction": "aprovar", "ui.footerRejectAction": "rejeitar", "ui.footerSteerAction": "orientar", "ui.footerAutoAction": "auto", "ui.footerEditAction": "editar",
+        "ui.footerCollapseAction": "recolher", "ui.footerExpandAction": "expandir",
+        "ui.steerPrompt": "Como {path} deveria mudar em vez disso?",
+        "rpc.prompt": "Como o pi deve lidar com esta mudança?",
+        "rpc.approve": "Aprovar",
+        "rpc.reject": "Rejeitar",
+        "rpc.steer": "Orientar / solicitar mudanças",
+        "rpc.editFinal": "Editar conteúdo final do arquivo",
+        "rpc.approveAuto": "Aprovar + ativar aprovação automática",
+        "rpc.editTitle": "Editar conteúdo final de {path}"
     }}
 ];
 

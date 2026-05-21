@@ -1,4 +1,4 @@
-import type { EditToolInput, WriteToolInput } from "@mariozechner/pi-coding-agent";
+import type { EditToolInput, WriteToolInput } from "@earendil-works/pi-coding-agent";
 
 import { constants as fsConstants } from "node:fs";
 import { access, readFile } from "node:fs/promises";
