@@ -42,7 +42,7 @@ pi install git:github.com/xRyul/pi-show-diffs
 
 ## Commands
 
-- `/diff-approval` — open or toggle approval settings
+- `/diff-approval` — open approval settings; use `↑`/`↓` to select a setting and `Space`/`Enter` to cycle its value
 - `/show-diffs` — alias for `/diff-approval`
 
 Command args:
@@ -50,6 +50,8 @@ Command args:
 - `/diff-approval on`
 - `/diff-approval off`
 - `/diff-approval toggle`
+- `/diff-approval colors default` — use built-in diff backgrounds (`dark` uses the original muted red/green; `light` uses light-friendly red/green)
+- `/diff-approval colors theme` — use the active pi theme's tool success/error backgrounds
 - `/diff-approval status`
 
 ## Shortcuts in the diff modal
@@ -77,6 +79,7 @@ Command args:
 - `←` / `→` — decrease / increase shown context around hunks
 - `[` / `]` - alternate context controls
 - `w` - toggle wrapping
+- `Ctrl+F` - when expandable layout is enabled, open/collapse the expanded overlay
 
 ## Config
 
@@ -88,9 +91,26 @@ Current config shape:
 
 ```json
 {
-  "autoApprove": false
+  "autoApprove": false,
+  "diffColorMode": "default",
+  "expandableLayout": false,
+  "collapsedHeight": "30%",
+  "expandedHeight": "100%",
+  "expandedWidth": "100%"
 }
 ```
+
+`diffColorMode` accepts:
+
+- `default` — use pi-show-diffs predefined diff backgrounds. Dark themes use the original muted red/green; light themes use light-friendly red/green.
+- `theme` — follow your active pi theme's tool success/error backgrounds.
+
+Expandable layout options:
+
+- `expandableLayout` — when `true`, render the diff inline first instead of as a centered overlay.
+- `collapsedHeight` — inline diff height as a percentage string, clamped to `10%`-`100%`.
+- `expandedHeight` — maximum overlay height after `Ctrl+F`, clamped to `10%`-`100%`.
+- `expandedWidth` — overlay width after `Ctrl+F`, clamped to `10%`-`100%`.
 
 ## Notes
 

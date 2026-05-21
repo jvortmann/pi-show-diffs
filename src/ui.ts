@@ -18,13 +18,9 @@ import {
     type StructuredDiffRow,
     type StructuredDiffVisibleItem,
 } from "./diff-utils.js";
+import type { DiffColorMode } from "./config.js";
 import { rebuildPreviewAfterManualEdit, type ChangePreview } from "./preview.js";
-import {
-    detectSyntaxLanguage,
-    getSyntaxTokenColorAnsi,
-    tokenizeSyntaxLine,
-    type SyntaxSegment,
-} from "./syntax-highlight.js";
+import { detectSyntaxLanguage, tokenizeSyntaxLine, type SyntaxSegment } from "./syntax-highlight.js";
 
 export interface DiffDecision {
     action: "approve" | "reject" | "steer" | "approve_and_enable_auto";
@@ -34,6 +30,7 @@ export interface DiffDecision {
 
 interface ReviewOptions {
     allowAfterEdit?: boolean;
+    diffColorMode?: DiffColorMode;
     expandableLayout?: boolean;
     collapsedHeight?: string;
     expandedHeight?: string;
@@ -93,51 +90,45 @@ const MIN_CONTEXT_LINES = 0;
 const MAX_CONTEXT_LINES = 80;
 const INLINE_CURSOR_OPEN = "\x1b[1;7m";
 const INLINE_CURSOR_CLOSE = "\x1b[0m";
-function getThemeInstance(): any {
-    try {
-        return (globalThis as any)[Symbol.for("@earendil-works/pi-coding-agent:theme")] ?? undefined;
-    } catch {}
-    return undefined;
-}
-
-function getThemeBgAnsi(color: string): string | undefined {
-    return getThemeInstance()?.getBgAnsi?.(color);
-}
-
-function isLightTheme(): boolean {
-    const t = getThemeInstance();
-    if (!t) return false;
-    // Check theme name for explicit light/dark hint
-    const name: string = (t.name ?? "").toLowerCase();
-    if (name.includes("light")) return true;
-    if (name.includes("dark")) return false;
-    // Parse RGB from toolPendingBg ANSI to measure luminance
-    const bg = t.getBgAnsi?.("toolPendingBg");
-    if (typeof bg === "string") {
-        const m = bg.match(/48;2;(\d+);(\d+);(\d+)/);
-        if (m) {
-            const lum = (Number(m[1]) * 299 + Number(m[2]) * 587 + Number(m[3]) * 114) / 1000;
-            return lum > 128;
-        }
-    }
-    return false;
-}
-
-const DARK_DIFF_BG: Record<Exclude<DiffTone, "toolDiffContext">, string> = {
+const DEFAULT_DARK_DIFF_BACKGROUND_ANSI: Record<Exclude<DiffTone, "toolDiffContext">, string> = {
     toolDiffAdded: "\x1b[48;2;58;86;74m",
     toolDiffRemoved: "\x1b[48;2;86;63;67m",
 };
-const LIGHT_DIFF_BG: Record<Exclude<DiffTone, "toolDiffContext">, string> = {
-    toolDiffAdded: "\x1b[48;2;210;228;190m",
-    toolDiffRemoved: "\x1b[48;2;228;200;200m",
+const DEFAULT_LIGHT_DIFF_BACKGROUND_ANSI: Record<Exclude<DiffTone, "toolDiffContext">, string> = {
+    toolDiffAdded: "\x1b[48;2;223;240;216m",
+    toolDiffRemoved: "\x1b[48;2;242;222;222m",
 };
 
-function getDiffBackgrounds(): Record<Exclude<DiffTone, "toolDiffContext">, string> {
-    const fallback = isLightTheme() ? LIGHT_DIFF_BG : DARK_DIFF_BG;
+function isLightTheme(theme: Theme): boolean {
+    const name = (theme.name ?? "").toLowerCase();
+    if (name.includes("light")) return true;
+    if (name.includes("dark")) return false;
+
+    try {
+        const bg = theme.getBgAnsi("toolPendingBg");
+        const match = bg.match(/48;2;(\d+);(\d+);(\d+)/);
+        if (match) {
+            const luminance = (Number(match[1]) * 299 + Number(match[2]) * 587 + Number(match[3]) * 114) / 1000;
+            return luminance > 128;
+        }
+    } catch {}
+
+    return false;
+}
+
+function getDefaultDiffBackgrounds(theme: Theme): Record<Exclude<DiffTone, "toolDiffContext">, string> {
+    return isLightTheme(theme) ? DEFAULT_LIGHT_DIFF_BACKGROUND_ANSI : DEFAULT_DARK_DIFF_BACKGROUND_ANSI;
+}
+
+function getThemeDiffBackgrounds(theme: Theme): Record<Exclude<DiffTone, "toolDiffContext">, string> {
     return {
-        toolDiffAdded: getThemeBgAnsi("toolSuccessBg") ?? fallback.toolDiffAdded,
-        toolDiffRemoved: getThemeBgAnsi("toolErrorBg") ?? fallback.toolDiffRemoved,
+        toolDiffAdded: theme.getBgAnsi("toolSuccessBg"),
+        toolDiffRemoved: theme.getBgAnsi("toolErrorBg"),
     };
+}
+
+function getDiffBackgrounds(theme: Theme, mode: DiffColorMode): Record<Exclude<DiffTone, "toolDiffContext">, string> {
+    return mode === "theme" ? getThemeDiffBackgrounds(theme) : getDefaultDiffBackgrounds(theme);
 }
 
 function clampNumber(value: number, min: number, max: number): number {
@@ -272,8 +263,10 @@ class DiffViewer implements Component {
         private readonly theme: Theme,
         preview: ChangePreview,
         private readonly allowAfterEdit: boolean,
-        private readonly collapsedHeightPercent: number = 30,
+        private readonly diffColorMode: DiffColorMode,
+        private readonly collapsedHeightPercent: number = 90,
         private readonly expandedHeightPercent: number = 100,
+        private readonly expandableLayoutHint: boolean = false,
     ) {
         this.preview = preview;
         this.initialAfterText = preview.afterText;
@@ -297,6 +290,17 @@ class DiffViewer implements Component {
         return this.initialAfterText !== undefined && this.preview.afterText !== undefined && this.preview.afterText !== this.initialAfterText
             ? this.preview.afterText
             : undefined;
+    }
+
+    getPreview(): ChangePreview {
+        return this.preview;
+    }
+
+    setPreview(preview: ChangePreview): void {
+        this.applyUpdatedPreview(preview);
+        if (this.inlineEditor && this.inlineEditor.getText() !== (preview.afterText ?? "")) {
+            this.inlineEditor.setText(preview.afterText ?? "");
+        }
     }
 
     private createInlineEditor(): Editor {
@@ -513,21 +517,15 @@ class DiffViewer implements Component {
 
     private getTotalHeight(): number {
         const rows = this.tui.terminal.rows || 24;
+        const maxHeight = Math.max(4, rows - 2);
         if (this.expandedView) {
-            const h = Math.floor(rows * this.expandedHeightPercent / 100) - 4;
-            return Math.max(16, Math.min(h, rows - 2));
+            const height = Math.floor((rows * this.expandedHeightPercent) / 100) - 4;
+            return clampNumber(Math.max(16, height), 4, maxHeight);
         }
-        return Math.max(10, Math.floor(rows * this.collapsedHeightPercent / 100));
-    }
 
-    toggleExpand(): boolean {
-        this.expandedView = !this.expandedView;
-        this.lastRenderedDiffCache = undefined;
-        return true;
-    }
-
-    isExpanded(): boolean {
-        return this.expandedView;
+        const minHeight = this.collapsedHeightPercent >= 80 ? 16 : 10;
+        const height = Math.floor((rows * this.collapsedHeightPercent) / 100);
+        return clampNumber(Math.max(minHeight, height), 4, maxHeight);
     }
 
     setExpanded(value: boolean): void {
@@ -664,6 +662,9 @@ class DiffViewer implements Component {
         if (this.allowAfterEdit) {
             parts.splice(parts.length - 3, 0, "E edit inline");
         }
+        if (this.expandableLayoutHint) {
+            parts.splice(parts.length - 3, 0, this.expandedView ? "Ctrl+F collapse" : "Ctrl+F expand");
+        }
         if (!this.diffModel) {
             parts.splice(0, 2, "↑↓ scroll", "PgUp/PgDn jump");
         }
@@ -685,7 +686,7 @@ class DiffViewer implements Component {
 
     private getBackgroundAnsiForTone(tone: DiffTone): string | undefined {
         if (tone === "toolDiffContext") return undefined;
-        return getDiffBackgrounds()[tone];
+        return getDiffBackgrounds(this.theme, this.diffColorMode)[tone];
     }
 
     private getForegroundForTone(tone: DiffTone): "text" | "toolDiffContext" {
@@ -1342,17 +1343,35 @@ function isRpcMode(ctx: ExtensionContext): boolean {
     return ctx.ui.getAllThemes().length === 0;
 }
 
+function parsePercentOption(value: string | undefined, fallback: number): number {
+    const match = value?.trim().match(/^(\d+(?:\.\d+)?)%?$/);
+    if (!match) return fallback;
+
+    const parsed = Number(match[1]);
+    if (!Number.isFinite(parsed)) return fallback;
+    return clampNumber(parsed, 10, 100);
+}
+
+function percentSizeValue(percent: number): SizeValue {
+    return `${Number.isInteger(percent) ? percent : Number(percent.toFixed(2))}%` as SizeValue;
+}
+
 export async function reviewChangePreview(
     ctx: ExtensionContext,
     preview: ChangePreview,
     options: ReviewOptions = {},
 ): Promise<DiffDecision> {
+    type ExpandableOverlayDecision = DiffDecision | { action: "collapse" };
+
     const allowAfterEdit =
         Boolean(options.allowAfterEdit) && preview.beforeText !== undefined && preview.afterText !== undefined;
+    const diffColorMode = options.diffColorMode ?? "default";
     const expandableLayout = Boolean(options.expandableLayout);
-    const collapsedHeight = options.collapsedHeight ?? "30%";
-    const expandedHeight = options.expandedHeight ?? "100%";
-    const expandedWidth = options.expandedWidth ?? "100%";
+    const collapsedHeightPercent = parsePercentOption(options.collapsedHeight, 30);
+    const expandedHeightPercent = parsePercentOption(options.expandedHeight, 100);
+    const expandedWidthPercent = parsePercentOption(options.expandedWidth, 100);
+    const expandedHeight = percentSizeValue(expandedHeightPercent);
+    const expandedWidth = percentSizeValue(expandedWidthPercent);
     const initialAfterText = preview.afterText;
     let currentPreview = preview;
 
@@ -1360,6 +1379,18 @@ export async function reviewChangePreview(
         initialAfterText !== undefined && currentPreview.afterText !== undefined && currentPreview.afterText !== initialAfterText
             ? currentPreview.afterText
             : undefined;
+
+    const syncCurrentPreviewFromViewer = (viewer: DiffViewer) => {
+        const viewerPreview = viewer.getPreview();
+        if (viewerPreview.afterText !== currentPreview.afterText) {
+            currentPreview = viewerPreview;
+        }
+    };
+
+    const approvedDecisionFromViewer = (viewer: DiffViewer, action: "approve" | "approve_and_enable_auto"): DiffDecision => {
+        syncCurrentPreviewFromViewer(viewer);
+        return { action, afterTextOverride: getAfterTextOverride() };
+    };
 
     if (isRpcMode(ctx)) {
         while (true) {
@@ -1413,7 +1444,7 @@ export async function reviewChangePreview(
     if (!expandableLayout) {
         const decision = await ctx.ui.custom<DiffDecision>(
             (tui, theme, _kb, done) => {
-                const viewer = new DiffViewer(tui, theme, preview, allowAfterEdit);
+                const viewer = new DiffViewer(tui, theme, currentPreview, allowAfterEdit, diffColorMode);
                 const framed = new BorderFrame(viewer, (text) => theme.fg("accent", text));
                 const previousShowHardwareCursor = tui.getShowHardwareCursor();
                 const syncCursorMode = () => tui.setShowHardwareCursor(viewer.isEditingInline() || previousShowHardwareCursor);
@@ -1432,7 +1463,7 @@ export async function reviewChangePreview(
                         }
 
                         if (matchesKey(data, "return") || data === "a" || data === "y") {
-                            done({ action: "approve", afterTextOverride: viewer.getAfterTextOverride() });
+                            done(approvedDecisionFromViewer(viewer, "approve"));
                             return;
                         }
                         if (matchesKey(data, "escape") || data === "r") {
@@ -1444,7 +1475,7 @@ export async function reviewChangePreview(
                             return;
                         }
                         if (data === "A") {
-                            done({ action: "approve_and_enable_auto", afterTextOverride: viewer.getAfterTextOverride() });
+                            done(approvedDecisionFromViewer(viewer, "approve_and_enable_auto"));
                             return;
                         }
 
@@ -1472,21 +1503,42 @@ export async function reviewChangePreview(
         return feedback?.trim() ? { action: "steer", feedback: feedback.trim() } : { action: "reject" };
     }
 
-    // Expandable layout: non-overlay compact, Ctrl+F stacks full overlay on top
+    // Expandable layout: non-overlay compact, Ctrl+F stacks full overlay on top.
     const decision = await ctx.ui.custom<DiffDecision>(
         (tui, theme, _kb, done) => {
-            const collapsedPct = parseInt(collapsedHeight, 10) || 30;
-            const viewer = new DiffViewer(tui, theme, preview, allowAfterEdit, collapsedPct);
+            const viewer = new DiffViewer(
+                tui,
+                theme,
+                currentPreview,
+                allowAfterEdit,
+                diffColorMode,
+                collapsedHeightPercent,
+                100,
+                true,
+            );
             const framed = new BorderFrame(viewer, (text) => theme.fg("accent", text));
             const previousShowHardwareCursor = tui.getShowHardwareCursor();
             const syncCursorMode = () => tui.setShowHardwareCursor(viewer.isEditingInline() || previousShowHardwareCursor);
             syncCursorMode();
 
             const launchOverlay = () => {
-                ctx.ui.custom<DiffDecision | { action: "collapse" }>(
+                syncCurrentPreviewFromViewer(viewer);
+                viewer.setPreview(currentPreview);
+
+                let overlayViewer: DiffViewer | undefined;
+                ctx.ui.custom<ExpandableOverlayDecision>(
                     (oTui, oTheme, _oKb, oDone) => {
-                        const expandedPct = parseInt(expandedHeight, 10) || 100;
-                        const oViewer = new DiffViewer(oTui, oTheme, preview, allowAfterEdit, expandedPct, expandedPct);
+                        const oViewer = new DiffViewer(
+                            oTui,
+                            oTheme,
+                            currentPreview,
+                            allowAfterEdit,
+                            diffColorMode,
+                            expandedHeightPercent,
+                            expandedHeightPercent,
+                            true,
+                        );
+                        overlayViewer = oViewer;
                         oViewer.setExpanded(true);
                         const oFramed = new BorderFrame(oViewer, (text) => oTheme.fg("accent", text));
                         const oPrevCursor = oTui.getShowHardwareCursor();
@@ -1506,11 +1558,12 @@ export async function reviewChangePreview(
                                 }
 
                                 if (matchesKey(data, "ctrl+f")) {
-                                    oDone({ action: "collapse" } as any);
+                                    syncCurrentPreviewFromViewer(oViewer);
+                                    oDone({ action: "collapse" });
                                     return;
                                 }
                                 if (matchesKey(data, "return") || data === "a" || data === "y") {
-                                    oDone({ action: "approve", afterTextOverride: oViewer.getAfterTextOverride() });
+                                    oDone(approvedDecisionFromViewer(oViewer, "approve"));
                                     return;
                                 }
                                 if (matchesKey(data, "escape") || data === "r") {
@@ -1522,7 +1575,7 @@ export async function reviewChangePreview(
                                     return;
                                 }
                                 if (data === "A") {
-                                    oDone({ action: "approve_and_enable_auto", afterTextOverride: oViewer.getAfterTextOverride() });
+                                    oDone(approvedDecisionFromViewer(oViewer, "approve_and_enable_auto"));
                                     return;
                                 }
 
@@ -1538,15 +1591,20 @@ export async function reviewChangePreview(
                         overlay: true,
                         overlayOptions: {
                             anchor: "center",
-                            width: expandedWidth as SizeValue,
-                            maxHeight: expandedHeight as SizeValue,
+                            width: expandedWidth,
+                            maxHeight: expandedHeight,
                             minWidth: 20,
-                            margin: expandedWidth === "100%" ? 0 : 1,
+                            margin: expandedWidthPercent >= 100 ? 0 : 1,
                         },
                     },
                 ).then((overlayDecision) => {
-                    if ((overlayDecision as any).action === "collapse") return;
-                    done(overlayDecision as DiffDecision);
+                    if (overlayViewer) {
+                        syncCurrentPreviewFromViewer(overlayViewer);
+                    }
+                    viewer.setPreview(currentPreview);
+                    tui.requestRender();
+                    if (overlayDecision.action === "collapse") return;
+                    done(overlayDecision);
                 });
             };
 
@@ -1567,7 +1625,7 @@ export async function reviewChangePreview(
                         return;
                     }
                     if (matchesKey(data, "return") || data === "a" || data === "y") {
-                        done({ action: "approve", afterTextOverride: viewer.getAfterTextOverride() });
+                        done(approvedDecisionFromViewer(viewer, "approve"));
                         return;
                     }
                     if (matchesKey(data, "escape") || data === "r") {
@@ -1579,7 +1637,7 @@ export async function reviewChangePreview(
                         return;
                     }
                     if (data === "A") {
-                        done({ action: "approve_and_enable_auto", afterTextOverride: viewer.getAfterTextOverride() });
+                        done(approvedDecisionFromViewer(viewer, "approve_and_enable_auto"));
                         return;
                     }
 
