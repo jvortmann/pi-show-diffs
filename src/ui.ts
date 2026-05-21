@@ -7,6 +7,8 @@ import {
     visibleWidth,
     wrapTextWithAnsi,
     type Component,
+    type SizeValue,
+    type KeyId,
 } from "@earendil-works/pi-tui";
 
 import {
@@ -17,13 +19,9 @@ import {
     type StructuredDiffRow,
     type StructuredDiffVisibleItem,
 } from "./diff-utils.js";
+import { DEFAULT_KEYBINDINGS, type DiffColorMode, type DiffKeybindings } from "./config.js";
 import { rebuildPreviewAfterManualEdit, type ChangePreview } from "./preview.js";
-import {
-    detectSyntaxLanguage,
-    getSyntaxTokenColorAnsi,
-    tokenizeSyntaxLine,
-    type SyntaxSegment,
-} from "./syntax-highlight.js";
+import { detectSyntaxLanguage, tokenizeSyntaxLine, type SyntaxSegment } from "./syntax-highlight.js";
 
 export interface DiffDecision {
     action: "approve" | "reject" | "steer" | "approve_and_enable_auto";
@@ -33,6 +31,12 @@ export interface DiffDecision {
 
 interface ReviewOptions {
     allowAfterEdit?: boolean;
+    diffColorMode?: DiffColorMode;
+    expandableLayout?: boolean;
+    collapsedHeight?: string;
+    expandedHeight?: string;
+    expandedWidth?: string;
+    keybindings?: DiffKeybindings;
 }
 
 type ViewMode = "split" | "unified";
@@ -88,51 +92,45 @@ const MIN_CONTEXT_LINES = 0;
 const MAX_CONTEXT_LINES = 80;
 const INLINE_CURSOR_OPEN = "\x1b[1;7m";
 const INLINE_CURSOR_CLOSE = "\x1b[0m";
-function getThemeInstance(): any {
-    try {
-        return (globalThis as any)[Symbol.for("@earendil-works/pi-coding-agent:theme")] ?? undefined;
-    } catch {}
-    return undefined;
-}
-
-function getThemeBgAnsi(color: string): string | undefined {
-    return getThemeInstance()?.getBgAnsi?.(color);
-}
-
-function isLightTheme(): boolean {
-    const t = getThemeInstance();
-    if (!t) return false;
-    // Check theme name for explicit light/dark hint
-    const name: string = (t.name ?? "").toLowerCase();
-    if (name.includes("light")) return true;
-    if (name.includes("dark")) return false;
-    // Parse RGB from toolPendingBg ANSI to measure luminance
-    const bg = t.getBgAnsi?.("toolPendingBg");
-    if (typeof bg === "string") {
-        const m = bg.match(/48;2;(\d+);(\d+);(\d+)/);
-        if (m) {
-            const lum = (Number(m[1]) * 299 + Number(m[2]) * 587 + Number(m[3]) * 114) / 1000;
-            return lum > 128;
-        }
-    }
-    return false;
-}
-
-const DARK_DIFF_BG: Record<Exclude<DiffTone, "toolDiffContext">, string> = {
+const DEFAULT_DARK_DIFF_BACKGROUND_ANSI: Record<Exclude<DiffTone, "toolDiffContext">, string> = {
     toolDiffAdded: "\x1b[48;2;58;86;74m",
     toolDiffRemoved: "\x1b[48;2;86;63;67m",
 };
-const LIGHT_DIFF_BG: Record<Exclude<DiffTone, "toolDiffContext">, string> = {
-    toolDiffAdded: "\x1b[48;2;210;228;190m",
-    toolDiffRemoved: "\x1b[48;2;228;200;200m",
+const DEFAULT_LIGHT_DIFF_BACKGROUND_ANSI: Record<Exclude<DiffTone, "toolDiffContext">, string> = {
+    toolDiffAdded: "\x1b[48;2;223;240;216m",
+    toolDiffRemoved: "\x1b[48;2;242;222;222m",
 };
 
-function getDiffBackgrounds(): Record<Exclude<DiffTone, "toolDiffContext">, string> {
-    const fallback = isLightTheme() ? LIGHT_DIFF_BG : DARK_DIFF_BG;
+function isLightTheme(theme: Theme): boolean {
+    const name = (theme.name ?? "").toLowerCase();
+    if (name.includes("light")) return true;
+    if (name.includes("dark")) return false;
+
+    try {
+        const bg = theme.getBgAnsi("toolPendingBg");
+        const match = bg.match(/48;2;(\d+);(\d+);(\d+)/);
+        if (match) {
+            const luminance = (Number(match[1]) * 299 + Number(match[2]) * 587 + Number(match[3]) * 114) / 1000;
+            return luminance > 128;
+        }
+    } catch {}
+
+    return false;
+}
+
+function getDefaultDiffBackgrounds(theme: Theme): Record<Exclude<DiffTone, "toolDiffContext">, string> {
+    return isLightTheme(theme) ? DEFAULT_LIGHT_DIFF_BACKGROUND_ANSI : DEFAULT_DARK_DIFF_BACKGROUND_ANSI;
+}
+
+function getThemeDiffBackgrounds(theme: Theme): Record<Exclude<DiffTone, "toolDiffContext">, string> {
     return {
-        toolDiffAdded: getThemeBgAnsi("toolSuccessBg") ?? fallback.toolDiffAdded,
-        toolDiffRemoved: getThemeBgAnsi("toolErrorBg") ?? fallback.toolDiffRemoved,
+        toolDiffAdded: theme.getBgAnsi("toolSuccessBg"),
+        toolDiffRemoved: theme.getBgAnsi("toolErrorBg"),
     };
+}
+
+function getDiffBackgrounds(theme: Theme, mode: DiffColorMode): Record<Exclude<DiffTone, "toolDiffContext">, string> {
+    return mode === "theme" ? getThemeDiffBackgrounds(theme) : getDefaultDiffBackgrounds(theme);
 }
 
 function clampNumber(value: number, min: number, max: number): number {
@@ -242,6 +240,7 @@ class DiffViewer implements Component {
     private scrollOffset = 0;
     private lastWidth = 80;
     private wrapLongLines = true;
+    private expandedView = false;
     private preferredMode: ViewMode;
     private baseDiffModel?: StructuredDiff;
     private diffModel?: StructuredDiff;
@@ -260,13 +259,20 @@ class DiffViewer implements Component {
     private lastRenderedDiffCache?: { key: string; value: RenderedDiffCache };
     private readonly cursorlessRowCache = new Map<string, RenderedCell>();
     private readonly gapLineCache = new Map<string, string>();
+    private readonly kb: DiffKeybindings;
 
     constructor(
         private readonly tui: { terminal: { rows: number } },
         private readonly theme: Theme,
         preview: ChangePreview,
         private readonly allowAfterEdit: boolean,
+        private readonly diffColorMode: DiffColorMode,
+        private readonly collapsedHeightPercent: number = 90,
+        private readonly expandedHeightPercent: number = 100,
+        private readonly expandableLayoutHint: boolean = false,
+        keybindings?: DiffKeybindings,
     ) {
+        this.kb = keybindings ?? DEFAULT_KEYBINDINGS;
         this.preview = preview;
         this.initialAfterText = preview.afterText;
         this.baseDiffModel = preview.diffModel;
@@ -289,6 +295,17 @@ class DiffViewer implements Component {
         return this.initialAfterText !== undefined && this.preview.afterText !== undefined && this.preview.afterText !== this.initialAfterText
             ? this.preview.afterText
             : undefined;
+    }
+
+    getPreview(): ChangePreview {
+        return this.preview;
+    }
+
+    setPreview(preview: ChangePreview): void {
+        this.applyUpdatedPreview(preview);
+        if (this.inlineEditor && this.inlineEditor.getText() !== (preview.afterText ?? "")) {
+            this.inlineEditor.setText(preview.afterText ?? "");
+        }
     }
 
     private createInlineEditor(): Editor {
@@ -505,7 +522,57 @@ class DiffViewer implements Component {
 
     private getTotalHeight(): number {
         const rows = this.tui.terminal.rows || 24;
-        return Math.max(16, Math.min(rows - 2, Math.floor(rows * 0.9)));
+        const maxHeight = Math.max(4, rows - 2);
+        if (this.expandedView) {
+            const height = Math.floor((rows * this.expandedHeightPercent) / 100) - 4;
+            return clampNumber(Math.max(16, height), 4, maxHeight);
+        }
+
+        const minHeight = this.collapsedHeightPercent >= 80 ? 16 : 10;
+        const height = Math.floor((rows * this.collapsedHeightPercent) / 100);
+        return clampNumber(Math.max(minHeight, height), 4, maxHeight);
+    }
+
+    setExpanded(value: boolean): void {
+        this.expandedView = value;
+        this.lastRenderedDiffCache = undefined;
+    }
+
+    private buildKeymap(layout: ViewerLayout): Map<string, () => boolean> {
+        const { kb } = this;
+        const actionDefs: Array<[string[] | false, () => boolean]> = [
+            [kb.editInline, () => this.allowAfterEdit ? this.enterInlineEditMode() : false],
+            [kb.scrollUp, () => this.setScrollOffset(this.scrollOffset - 1)],
+            [kb.scrollDown, () => this.setScrollOffset(this.scrollOffset + 1)],
+            [kb.pageUp, () => this.setScrollOffset(this.scrollOffset - layout.viewportHeight)],
+            [kb.pageDown, () => this.setScrollOffset(this.scrollOffset + layout.viewportHeight)],
+            [kb.scrollTop, () => this.setScrollOffset(0)],
+            [kb.scrollBottom, () => this.setScrollOffset(layout.maxScrollOffset)],
+            [kb.nextHunk, () => this.jumpToHunk(layout.currentHunkIndex + 1)],
+            [kb.prevHunk, () => this.jumpToHunk(layout.currentHunkIndex - 1)],
+            [kb.contextLess, () => this.adjustContext(-1)],
+            [kb.contextMore, () => this.adjustContext(1)],
+            [kb.toggleMode, () => this.toggleMode()],
+            [kb.toggleWrap, () => this.toggleWrap()],
+        ];
+        const keymap = new Map<string, () => boolean>();
+        for (const [binding, action] of actionDefs) {
+            if (!binding) continue;
+            for (const key of binding) keymap.set(key, action);
+        }
+        return keymap;
+    }
+
+    private resolveAction(data: string, layout: ViewerLayout): (() => boolean) | undefined {
+        const keymap = this.buildKeymap(layout);
+        const direct = keymap.get(data);
+        if (direct) return direct;
+        for (const [key, action] of keymap) {
+            if (key.includes("+") || key.length > 1) {
+                if (matchesKey(data, key as KeyId)) return action;
+            }
+        }
+        return undefined;
     }
 
     private getLineNumberWidth(): number {
@@ -621,28 +688,56 @@ class DiffViewer implements Component {
             ];
         }
 
-        const parts = [
-            "n/p hunks",
-            "↑↓ scroll",
-            "PgUp/PgDn jump",
-            "Home/End edges",
-            "←/→ context",
-            "Tab split/unified",
-            "w wrap",
-            "Enter/y approve",
-            "r/Esc reject",
-            "s steer",
-            "Shift+A auto",
-        ];
-        if (this.allowAfterEdit) {
-            parts.splice(parts.length - 3, 0, "E edit inline");
-        }
-        if (!this.diffModel) {
-            parts.splice(0, 2, "↑↓ scroll", "PgUp/PgDn jump");
-        }
-        if (mode !== "split") {
-            parts.splice(4, 1, "[/] context");
-        }
+        const { kb } = this;
+        const keyLabel = (key: string): string => {
+            const labels: Record<string, string> = {
+                up: "↑",
+                down: "↓",
+                left: "←",
+                right: "→",
+                pageUp: "PgUp",
+                pageDown: "PgDn",
+                home: "Home",
+                end: "End",
+                Escape: "Esc",
+                escape: "Esc",
+                Tab: "Tab",
+                tab: "Tab",
+            };
+            return labels[key] ?? key;
+        };
+        const formatBinding = (binding: string[] | false): string | null => {
+            if (!binding || binding.length === 0) return null;
+            return binding.map(keyLabel).join("/");
+        };
+        const fmt = (binding: string[] | false, label: string): string | null => {
+            const keys = formatBinding(binding);
+            return keys ? `${keys} ${label}` : null;
+        };
+        const fmtPair = (first: string[] | false, second: string[] | false, label: string): string | null => {
+            const firstKeys = formatBinding(first);
+            const secondKeys = formatBinding(second);
+            return firstKeys && secondKeys ? `${firstKeys}/${secondKeys} ${label}` : null;
+        };
+        const hasHunks = (this.getNavigationDiff()?.hunks.length ?? 0) > 0;
+        const hasStructuredDiff = Boolean(this.baseDiffModel);
+
+        const parts: string[] = [
+            hasHunks ? fmt(kb.prevHunk, "prev") : null,
+            hasHunks ? fmt(kb.nextHunk, "next") : null,
+            fmtPair(kb.scrollUp, kb.scrollDown, "scroll"),
+            fmtPair(kb.pageUp, kb.pageDown, "jump"),
+            fmtPair(kb.scrollTop, kb.scrollBottom, "edges"),
+            hasStructuredDiff ? fmtPair(kb.contextLess, kb.contextMore, "ctx-/+") : null,
+            hasStructuredDiff ? fmt(kb.toggleMode, "split/unified") : null,
+            fmt(kb.toggleWrap, "wrap"),
+            this.allowAfterEdit ? fmt(kb.editInline, "edit") : null,
+            this.expandableLayoutHint ? fmt(kb.toggleExpand, this.expandedView ? "collapse" : "expand") : null,
+            fmt(kb.approve, "approve"),
+            fmt(kb.reject, "reject"),
+            fmt(kb.steer, "steer"),
+            fmt(kb.autoApprove, "auto"),
+        ].filter((part): part is string => part !== null);
         return [truncateToWidth(this.theme.fg("dim", parts.join(" • ")), width, "", false)];
     }
 
@@ -658,7 +753,7 @@ class DiffViewer implements Component {
 
     private getBackgroundAnsiForTone(tone: DiffTone): string | undefined {
         if (tone === "toolDiffContext") return undefined;
-        return getDiffBackgrounds()[tone];
+        return getDiffBackgrounds(this.theme, this.diffColorMode)[tone];
     }
 
     private getForegroundForTone(tone: DiffTone): "text" | "toolDiffContext" {
@@ -1259,20 +1354,8 @@ class DiffViewer implements Component {
             return true;
         }
 
-        if ((data === "e" || data === "E") && this.allowAfterEdit) return this.enterInlineEditMode();
-        if (matchesKey(data, "up")) return this.setScrollOffset(this.scrollOffset - 1);
-        if (matchesKey(data, "down")) return this.setScrollOffset(this.scrollOffset + 1);
-        if (matchesKey(data, "pageUp")) return this.setScrollOffset(this.scrollOffset - layout.viewportHeight);
-        if (matchesKey(data, "pageDown")) return this.setScrollOffset(this.scrollOffset + layout.viewportHeight);
-        if (matchesKey(data, "home")) return this.setScrollOffset(0);
-        if (matchesKey(data, "end")) return this.setScrollOffset(layout.maxScrollOffset);
-        if (data === "n") return this.jumpToHunk(layout.currentHunkIndex + 1);
-        if (data === "p") return this.jumpToHunk(layout.currentHunkIndex - 1);
-        if (matchesKey(data, "left") || data === "[") return this.adjustContext(-1);
-        if (matchesKey(data, "right") || data === "]") return this.adjustContext(1);
-        if (matchesKey(data, "tab")) return this.toggleMode();
-        if (data === "w") return this.toggleWrap();
-        return false;
+        const action = this.resolveAction(data, layout);
+        return action ? action() : false;
     }
 
     render(width: number): string[] {
@@ -1315,13 +1398,44 @@ function isRpcMode(ctx: ExtensionContext): boolean {
     return ctx.ui.getAllThemes().length === 0;
 }
 
+function parsePercentOption(value: string | undefined, fallback: number): number {
+    const match = value?.trim().match(/^(\d+(?:\.\d+)?)%?$/);
+    if (!match) return fallback;
+
+    const parsed = Number(match[1]);
+    if (!Number.isFinite(parsed)) return fallback;
+    return clampNumber(parsed, 10, 100);
+}
+
+function percentSizeValue(percent: number): SizeValue {
+    return `${Number.isInteger(percent) ? percent : Number(percent.toFixed(2))}%` as SizeValue;
+}
+
 export async function reviewChangePreview(
     ctx: ExtensionContext,
     preview: ChangePreview,
     options: ReviewOptions = {},
 ): Promise<DiffDecision> {
+    type ExpandableOverlayDecision = DiffDecision | { action: "collapse" };
+
     const allowAfterEdit =
         Boolean(options.allowAfterEdit) && preview.beforeText !== undefined && preview.afterText !== undefined;
+    const diffColorMode = options.diffColorMode ?? "default";
+    const expandableLayout = Boolean(options.expandableLayout);
+    const collapsedHeightPercent = parsePercentOption(options.collapsedHeight, 30);
+    const expandedHeightPercent = parsePercentOption(options.expandedHeight, 100);
+    const expandedWidthPercent = parsePercentOption(options.expandedWidth, 100);
+    const expandedHeight = percentSizeValue(expandedHeightPercent);
+    const expandedWidth = percentSizeValue(expandedWidthPercent);
+    const kb = options.keybindings ?? DEFAULT_KEYBINDINGS;
+
+    const matchesBinding = (data: string, binding: string[] | false | undefined): boolean => {
+        if (!binding) return false;
+        return binding.some((key) => {
+            if (key.includes("+") || key.length > 1) return matchesKey(data, key as KeyId);
+            return data === key;
+        });
+    };
     const initialAfterText = preview.afterText;
     let currentPreview = preview;
 
@@ -1329,6 +1443,18 @@ export async function reviewChangePreview(
         initialAfterText !== undefined && currentPreview.afterText !== undefined && currentPreview.afterText !== initialAfterText
             ? currentPreview.afterText
             : undefined;
+
+    const syncCurrentPreviewFromViewer = (viewer: DiffViewer) => {
+        const viewerPreview = viewer.getPreview();
+        if (viewerPreview.afterText !== currentPreview.afterText) {
+            currentPreview = viewerPreview;
+        }
+    };
+
+    const approvedDecisionFromViewer = (viewer: DiffViewer, action: "approve" | "approve_and_enable_auto"): DiffDecision => {
+        syncCurrentPreviewFromViewer(viewer);
+        return { action, afterTextOverride: getAfterTextOverride() };
+    };
 
     if (isRpcMode(ctx)) {
         while (true) {
@@ -1379,13 +1505,174 @@ export async function reviewChangePreview(
         }
     }
 
+    if (!expandableLayout) {
+        const decision = await ctx.ui.custom<DiffDecision>(
+            (tui, theme, _kb, done) => {
+                const viewer = new DiffViewer(tui, theme, currentPreview, allowAfterEdit, diffColorMode, 90, 100, false, kb);
+                const framed = new BorderFrame(viewer, (text) => theme.fg("accent", text));
+                const previousShowHardwareCursor = tui.getShowHardwareCursor();
+                const syncCursorMode = () => tui.setShowHardwareCursor(viewer.isEditingInline() || previousShowHardwareCursor);
+                syncCursorMode();
+
+                return {
+                    render: (width: number) => framed.render(width),
+                    invalidate: () => framed.invalidate(),
+                    handleInput: (data: string) => {
+                        if (viewer.isEditingInline()) {
+                            if (viewer.handleInput(data)) {
+                                syncCursorMode();
+                                tui.requestRender();
+                            }
+                            return;
+                        }
+
+                        if (matchesBinding(data, kb.approve)) {
+                            done(approvedDecisionFromViewer(viewer, "approve"));
+                            return;
+                        }
+                        if (matchesBinding(data, kb.reject)) {
+                            done({ action: "reject" });
+                            return;
+                        }
+                        if (matchesBinding(data, kb.steer)) {
+                            done({ action: "steer" });
+                            return;
+                        }
+                        if (matchesBinding(data, kb.autoApprove)) {
+                            done(approvedDecisionFromViewer(viewer, "approve_and_enable_auto"));
+                            return;
+                        }
+
+                        if (viewer.handleInput(data)) {
+                            syncCursorMode();
+                            tui.requestRender();
+                        }
+                    },
+                    dispose: () => tui.setShowHardwareCursor(previousShowHardwareCursor),
+                };
+            },
+            {
+                overlay: true,
+                overlayOptions: {
+                    anchor: "center",
+                    width: "96%",
+                    minWidth: 20,
+                    margin: 1,
+                },
+            },
+        );
+
+        if (decision.action !== "steer") return decision;
+        const feedback = await ctx.ui.editor(`How should ${preview.path} change instead?`, "");
+        return feedback?.trim() ? { action: "steer", feedback: feedback.trim() } : { action: "reject" };
+    }
+
+    // Expandable layout: non-overlay compact, Ctrl+F stacks full overlay on top.
     const decision = await ctx.ui.custom<DiffDecision>(
         (tui, theme, _kb, done) => {
-            const viewer = new DiffViewer(tui, theme, preview, allowAfterEdit);
+            const viewer = new DiffViewer(
+                tui,
+                theme,
+                currentPreview,
+                allowAfterEdit,
+                diffColorMode,
+                collapsedHeightPercent,
+                100,
+                true,
+                kb,
+            );
             const framed = new BorderFrame(viewer, (text) => theme.fg("accent", text));
             const previousShowHardwareCursor = tui.getShowHardwareCursor();
             const syncCursorMode = () => tui.setShowHardwareCursor(viewer.isEditingInline() || previousShowHardwareCursor);
             syncCursorMode();
+
+            const launchOverlay = () => {
+                syncCurrentPreviewFromViewer(viewer);
+                viewer.setPreview(currentPreview);
+
+                let overlayViewer: DiffViewer | undefined;
+                ctx.ui.custom<ExpandableOverlayDecision>(
+                    (oTui, oTheme, _oKb, oDone) => {
+                        const oViewer = new DiffViewer(
+                            oTui,
+                            oTheme,
+                            currentPreview,
+                            allowAfterEdit,
+                            diffColorMode,
+                            expandedHeightPercent,
+                            expandedHeightPercent,
+                            true,
+                            kb,
+                        );
+                        overlayViewer = oViewer;
+                        oViewer.setExpanded(true);
+                        const oFramed = new BorderFrame(oViewer, (text) => oTheme.fg("accent", text));
+                        const oPrevCursor = oTui.getShowHardwareCursor();
+                        const oSyncCursor = () => oTui.setShowHardwareCursor(oViewer.isEditingInline() || oPrevCursor);
+                        oSyncCursor();
+
+                        return {
+                            render: (width: number) => oFramed.render(width),
+                            invalidate: () => oFramed.invalidate(),
+                            handleInput: (data: string) => {
+                                if (oViewer.isEditingInline()) {
+                                    if (oViewer.handleInput(data)) {
+                                        oSyncCursor();
+                                        oTui.requestRender();
+                                    }
+                                    return;
+                                }
+
+                                if (matchesBinding(data, kb.toggleExpand)) {
+                                    syncCurrentPreviewFromViewer(oViewer);
+                                    oDone({ action: "collapse" });
+                                    return;
+                                }
+                                if (matchesBinding(data, kb.approve)) {
+                                    oDone(approvedDecisionFromViewer(oViewer, "approve"));
+                                    return;
+                                }
+                                if (matchesBinding(data, kb.reject)) {
+                                    oDone({ action: "reject" });
+                                    return;
+                                }
+                                if (matchesBinding(data, kb.steer)) {
+                                    oDone({ action: "steer" });
+                                    return;
+                                }
+                                if (matchesBinding(data, kb.autoApprove)) {
+                                    oDone(approvedDecisionFromViewer(oViewer, "approve_and_enable_auto"));
+                                    return;
+                                }
+
+                                if (oViewer.handleInput(data)) {
+                                    oSyncCursor();
+                                    oTui.requestRender();
+                                }
+                            },
+                            dispose: () => oTui.setShowHardwareCursor(oPrevCursor),
+                        };
+                    },
+                    {
+                        overlay: true,
+                        overlayOptions: {
+                            anchor: "center",
+                            width: expandedWidth,
+                            maxHeight: expandedHeight,
+                            minWidth: 20,
+                            margin: expandedWidthPercent >= 100 ? 0 : 1,
+                        },
+                    },
+                ).then((overlayDecision) => {
+                    if (overlayViewer) {
+                        syncCurrentPreviewFromViewer(overlayViewer);
+                    }
+                    viewer.setPreview(currentPreview);
+                    tui.requestRender();
+                    if (overlayDecision.action === "collapse") return;
+                    done(overlayDecision);
+                });
+            };
 
             return {
                 render: (width: number) => framed.render(width),
@@ -1399,20 +1686,24 @@ export async function reviewChangePreview(
                         return;
                     }
 
-                    if (matchesKey(data, "return") || data === "a" || data === "y") {
-                        done({ action: "approve", afterTextOverride: viewer.getAfterTextOverride() });
+                    if (matchesBinding(data, kb.toggleExpand)) {
+                        launchOverlay();
                         return;
                     }
-                    if (matchesKey(data, "escape") || data === "r") {
+                    if (matchesBinding(data, kb.approve)) {
+                        done(approvedDecisionFromViewer(viewer, "approve"));
+                        return;
+                    }
+                    if (matchesBinding(data, kb.reject)) {
                         done({ action: "reject" });
                         return;
                     }
-                    if (data === "s") {
+                    if (matchesBinding(data, kb.steer)) {
                         done({ action: "steer" });
                         return;
                     }
-                    if (data === "A") {
-                        done({ action: "approve_and_enable_auto", afterTextOverride: viewer.getAfterTextOverride() });
+                    if (matchesBinding(data, kb.autoApprove)) {
+                        done(approvedDecisionFromViewer(viewer, "approve_and_enable_auto"));
                         return;
                     }
 
@@ -1425,13 +1716,7 @@ export async function reviewChangePreview(
             };
         },
         {
-            overlay: true,
-            overlayOptions: {
-                anchor: "center",
-                width: "96%",
-                minWidth: 20,
-                margin: 1,
-            },
+            overlay: false,
         },
     );
 
