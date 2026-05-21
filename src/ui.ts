@@ -1,4 +1,5 @@
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import { t } from "./i18n.js";
 import {
     CURSOR_MARKER,
     Editor,
@@ -640,17 +641,17 @@ class DiffViewer implements Component {
     private buildHeaderLines(width: number, mode: ViewMode, currentHunkIndex: number, totalHunks: number): string[] {
         const modeLabel = this.preferredMode === mode ? mode : `${mode} (auto)`;
         const diffLine = [
-            `${this.theme.fg("muted", "Diff:")} ${this.theme.fg("success", `+${this.preview.additions}`)} ${this.theme.fg("dim", "/")} ${this.theme.fg("error", `-${this.preview.deletions}`)}`,
+            `${this.theme.fg("muted", t("ui.diff", "Diff:"))} ${this.theme.fg("success", `+${this.preview.additions}`)} ${this.theme.fg("dim", "/")} ${this.theme.fg("error", `-${this.preview.deletions}`)}`,
             this.theme.fg("muted", this.formatHunkLabel(currentHunkIndex, totalHunks)),
-            `${this.theme.fg("muted", "View:")} ${this.theme.fg("text", modeLabel)}`,
-            `${this.theme.fg("muted", "Context:")} ${this.theme.fg("text", this.diffModel ? String(this.inlineEditMode ? "all" : this.contextLines) : "—")}`,
-            `${this.theme.fg("muted", "Wrap:")} ${this.theme.fg("text", this.wrapLongLines ? "on" : "off")}`,
+            `${this.theme.fg("muted", t("ui.view", "View:"))} ${this.theme.fg("text", modeLabel)}`,
+            `${this.theme.fg("muted", t("ui.context", "Context:"))} ${this.theme.fg("text", this.diffModel ? String(this.inlineEditMode ? "all" : this.contextLines) : "—")}`,
+            `${this.theme.fg("muted", t("ui.wrap", "Wrap:"))} ${this.theme.fg("text", this.wrapLongLines ? "on" : "off")}`,
         ].join(` ${this.theme.fg("dim", "•")} `);
-        const toolAndPath = `${this.theme.fg("muted", "Tool:")} ${this.theme.fg("text", normalizeTuiText(this.preview.toolName))} ${this.theme.fg("dim", "•")} ${this.theme.fg("muted", "Path:")} ${this.theme.fg("text", normalizeTuiText(this.preview.path))}`;
+        const toolAndPath = `${this.theme.fg("muted", t("ui.tool", "Tool:"))} ${this.theme.fg("text", normalizeTuiText(this.preview.toolName))} ${this.theme.fg("dim", "•")} ${this.theme.fg("muted", t("ui.path", "Path:"))} ${this.theme.fg("text", normalizeTuiText(this.preview.path))}`;
         const summaryLine = this.preview.previewError
-            ? this.theme.fg("warning", `Preview warning: ${normalizeTuiText(this.preview.previewError)}`)
+            ? this.theme.fg("warning", t("ui.previewWarning", `Preview warning: ${normalizeTuiText(this.preview.previewError)}`, { message: normalizeTuiText(this.preview.previewError) }))
             : this.theme.fg("dim", summarizeLines(this.preview.summaryLines));
-        const title = this.inlineEditMode ? "Review proposed file change · INLINE EDIT" : "Review proposed file change";
+        const title = this.inlineEditMode ? t("ui.titleEdit", "Review proposed file change · INLINE EDIT") : t("ui.title", "Review proposed file change");
 
         return [
             truncateToWidth(this.theme.bold(this.theme.fg("accent", title)), width, "", false),
@@ -663,8 +664,8 @@ class DiffViewer implements Component {
     private buildColumnLines(width: number, mode: ViewMode): string[] {
         if (mode !== "split") return [];
         const split = this.getSplitLayout(width);
-        const leftHeader = truncateToWidth(this.theme.bold(this.theme.fg("muted", "Original")), split.leftWidth, "", true);
-        const rightTitle = this.inlineEditMode ? this.theme.fg("accent", "Updated (editing)") : this.theme.fg("muted", "Updated");
+        const leftHeader = truncateToWidth(this.theme.bold(this.theme.fg("muted", t("ui.original", "Original"))), split.leftWidth, "", true);
+        const rightTitle = this.inlineEditMode ? this.theme.fg("accent", t("ui.updatedEditing", "Updated (editing)")) : this.theme.fg("muted", t("ui.updated", "Updated"));
         const rightHeader = truncateToWidth(this.theme.bold(rightTitle), split.rightWidth, "", true);
         const divider = this.theme.fg(
             "borderMuted",
@@ -731,12 +732,12 @@ class DiffViewer implements Component {
             hasStructuredDiff ? fmtPair(kb.contextLess, kb.contextMore, "ctx-/+") : null,
             hasStructuredDiff ? fmt(kb.toggleMode, "split/unified") : null,
             fmt(kb.toggleWrap, "wrap"),
-            this.allowAfterEdit ? fmt(kb.editInline, "edit") : null,
-            this.expandableLayoutHint ? fmt(kb.toggleExpand, this.expandedView ? "collapse" : "expand") : null,
-            fmt(kb.approve, "approve"),
-            fmt(kb.reject, "reject"),
-            fmt(kb.steer, "steer"),
-            fmt(kb.autoApprove, "auto"),
+            this.allowAfterEdit ? fmt(kb.editInline, t("ui.footerEditAction", "edit")) : null,
+            this.expandableLayoutHint ? fmt(kb.toggleExpand, this.expandedView ? t("ui.footerCollapseAction", "collapse") : t("ui.footerExpandAction", "expand")) : null,
+            fmt(kb.approve, t("ui.footerApproveAction", "approve")),
+            fmt(kb.reject, t("ui.footerRejectAction", "reject")),
+            fmt(kb.steer, t("ui.footerSteerAction", "steer")),
+            fmt(kb.autoApprove, t("ui.footerAutoAction", "auto")),
         ].filter((part): part is string => part !== null);
         return [truncateToWidth(this.theme.fg("dim", parts.join(" • ")), width, "", false)];
     }
@@ -1458,14 +1459,20 @@ export async function reviewChangePreview(
 
     if (isRpcMode(ctx)) {
         while (true) {
+            const approveLabel = t("rpc.approve", "Approve");
+            const rejectLabel = t("rpc.reject", "Reject");
+            const steerLabel = t("rpc.steer", "Steer / request changes");
+            const editFinalLabel = t("rpc.editFinal", "Edit final file content");
+            const approveAutoLabel = t("rpc.approveAuto", "Approve + enable auto-approve");
+
             await ctx.ui.editor(
                 [
-                    "Review proposed file change",
-                    `Tool: ${currentPreview.toolName}`,
-                    `Path: ${currentPreview.path}`,
-                    `Diff: +${currentPreview.additions} / -${currentPreview.deletions}`,
+                    t("ui.title", "Review proposed file change"),
+                    `${t("ui.tool", "Tool:")} ${currentPreview.toolName}`,
+                    `${t("ui.path", "Path:")} ${currentPreview.path}`,
+                    `${t("ui.diff", "Diff:")} +${currentPreview.additions} / -${currentPreview.deletions}`,
                     ...currentPreview.summaryLines.map((line) => `- ${line}`),
-                    currentPreview.previewError ? `Preview warning: ${currentPreview.previewError}` : "",
+                    currentPreview.previewError ? t("ui.previewWarning", `Preview warning: ${currentPreview.previewError}`, { message: currentPreview.previewError }) : "",
                 ]
                     .filter(Boolean)
                     .join("\n"),
@@ -1473,23 +1480,23 @@ export async function reviewChangePreview(
             );
 
             const choice = await ctx.ui.select(
-                "How should pi handle this change?",
+                t("rpc.prompt", "How should pi handle this change?"),
                 [
-                    "Approve",
-                    "Reject",
-                    "Steer / request changes",
-                    ...(allowAfterEdit ? ["Edit final file content"] : []),
-                    "Approve + enable auto-approve",
+                    approveLabel,
+                    rejectLabel,
+                    steerLabel,
+                    ...(allowAfterEdit ? [editFinalLabel] : []),
+                    approveAutoLabel,
                 ],
             );
 
-            if (choice === "Approve") return { action: "approve", afterTextOverride: getAfterTextOverride() };
-            if (choice === "Approve + enable auto-approve") {
+            if (choice === approveLabel) return { action: "approve", afterTextOverride: getAfterTextOverride() };
+            if (choice === approveAutoLabel) {
                 return { action: "approve_and_enable_auto", afterTextOverride: getAfterTextOverride() };
             }
-            if (choice === "Edit final file content" && allowAfterEdit) {
+            if (choice === editFinalLabel && allowAfterEdit) {
                 const edited = await ctx.ui.editor(
-                    `Edit final contents for ${currentPreview.path}`,
+                    t("rpc.editTitle", "Edit final contents for {path}", { path: currentPreview.path }),
                     currentPreview.afterText ?? "",
                 );
                 if (edited !== undefined) {
@@ -1497,8 +1504,8 @@ export async function reviewChangePreview(
                 }
                 continue;
             }
-            if (choice === "Steer / request changes") {
-                const feedback = await ctx.ui.editor(`How should ${currentPreview.path} change instead?`, "");
+            if (choice === steerLabel) {
+                const feedback = await ctx.ui.editor(t("ui.steerPrompt", "How should {path} change instead?", { path: currentPreview.path }), "");
                 return feedback?.trim() ? { action: "steer", feedback: feedback.trim() } : { action: "reject" };
             }
             return { action: "reject" };
@@ -1563,7 +1570,7 @@ export async function reviewChangePreview(
         );
 
         if (decision.action !== "steer") return decision;
-        const feedback = await ctx.ui.editor(`How should ${preview.path} change instead?`, "");
+        const feedback = await ctx.ui.editor(t("ui.steerPrompt", "How should {path} change instead?", { path: preview.path }), "");
         return feedback?.trim() ? { action: "steer", feedback: feedback.trim() } : { action: "reject" };
     }
 
@@ -1721,6 +1728,6 @@ export async function reviewChangePreview(
     );
 
     if (decision.action !== "steer") return decision;
-    const feedback = await ctx.ui.editor(`How should ${preview.path} change instead?`, "");
+    const feedback = await ctx.ui.editor(t("ui.steerPrompt", "How should {path} change instead?", { path: preview.path }), "");
     return feedback?.trim() ? { action: "steer", feedback: feedback.trim() } : { action: "reject" };
 }

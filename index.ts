@@ -9,6 +9,7 @@ import { CONFIG_PATH, DEFAULT_KEYBINDINGS, loadConfig, normalizeConfig, saveConf
 import { detectLineEnding, generateDiffString, restoreLineEndings, stripBom } from "./src/diff-utils.js";
 import { computeChangePreview, type ChangePreview, type PreviewToolName } from "./src/preview.js";
 import { reviewChangePreview } from "./src/ui.js";
+import { initI18n, t } from "./src/i18n.js";
 
 const STATUS_KEY = "pi-show-diffs";
 const TOOL_CALL_REVIEWED_TOOLS = new Set<PreviewToolName>(["edit", "hashline_edit", "write"]);
@@ -19,6 +20,7 @@ interface PendingImmediateApply {
 }
 
 export default function showDiffsExtension(pi: ExtensionAPI) {
+	initI18n(pi);
 	let config = loadConfig();
 	const pendingImmediateApplies = new Map<string, PendingImmediateApply>();
 
@@ -33,7 +35,7 @@ export default function showDiffsExtension(pi: ExtensionAPI) {
 	function getStatusLines() {
 		return [
 			"pi-show-diffs",
-			`Mode: ${config.autoApprove ? "auto-approve" : "manual review"}`,
+			`Mode: ${config.autoApprove ? t("mode.auto", "auto-approve") : t("mode.manual", "manual review")}`,
 			`Diff colors: ${config.diffColorMode}`,
 			`Layout: ${config.expandableLayout ? "expandable" : "overlay"}`,
 			`Collapsed height: ${config.collapsedHeight}`,
@@ -48,7 +50,7 @@ export default function showDiffsExtension(pi: ExtensionAPI) {
 		if (!ctx.hasUI) return;
 		ctx.ui.setStatus(
 			STATUS_KEY,
-			config.autoApprove ? ctx.ui.theme.fg("warning", "✍ auto-approve file changes") : undefined,
+			config.autoApprove ? ctx.ui.theme.fg("warning", t("status.auto", "✍ auto-approve file changes")) : undefined,
 		);
 	}
 
@@ -66,7 +68,7 @@ export default function showDiffsExtension(pi: ExtensionAPI) {
 			{ autoApprove },
 			ctx,
 			true,
-			autoApprove ? "Auto-approve is ON for file changes." : "Manual diff review is ON.",
+			autoApprove ? t("notify.autoOn", "Auto-approve is ON for file changes.") : t("notify.manualOn", "Manual diff review is ON."),
 		);
 	}
 
@@ -419,12 +421,12 @@ export default function showDiffsExtension(pi: ExtensionAPI) {
 	}
 
 	pi.registerCommand("diff-approval", {
-		description: "Toggle or inspect diff approval mode",
+		description: t("cmd.diffApproval", "Toggle or inspect diff approval mode"),
 		handler: handleCommand,
 	});
 
 	pi.registerCommand("show-diffs", {
-		description: "Alias for /diff-approval",
+		description: t("cmd.showDiffs", "Alias for /diff-approval"),
 		handler: handleCommand,
 	});
 
