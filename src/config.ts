@@ -147,8 +147,25 @@ export function loadConfig(): DiffApprovalConfig {
 	}
 }
 
+function hasErrorCode(error: unknown, code: string): boolean {
+	return typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === code;
+}
+
+function readExistingConfigForSave(): Record<string, unknown> {
+	try {
+		const parsed = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
+		return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+			? parsed as Record<string, unknown>
+			: {};
+	} catch (error) {
+		if (error instanceof SyntaxError || hasErrorCode(error, "ENOENT")) return {};
+		throw error;
+	}
+}
+
 export function saveConfig(config: DiffApprovalConfig): void {
 	const normalized = normalizeConfig(config);
 	mkdirSync(dirname(CONFIG_PATH), { recursive: true });
-	writeFileSync(CONFIG_PATH, `${JSON.stringify(normalized, null, 2)}\n`, "utf-8");
+	const merged = { ...readExistingConfigForSave(), ...normalized };
+	writeFileSync(CONFIG_PATH, `${JSON.stringify(merged, null, 2)}\n`, "utf-8");
 }
