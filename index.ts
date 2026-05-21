@@ -5,7 +5,7 @@ import { dirname } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { SettingsList, truncateToWidth, type SettingItem } from "@earendil-works/pi-tui";
 
-import { CONFIG_PATH, loadConfig, saveConfig, type DiffApprovalConfig, type DiffColorMode } from "./src/config.js";
+import { CONFIG_PATH, loadConfig, normalizeConfig, saveConfig, type DiffApprovalConfig, type DiffColorMode } from "./src/config.js";
 import { detectLineEnding, generateDiffString, restoreLineEndings, stripBom } from "./src/diff-utils.js";
 import { computeChangePreview, type ChangePreview, type PreviewToolName } from "./src/preview.js";
 import { reviewChangePreview } from "./src/ui.js";
@@ -35,6 +35,10 @@ export default function showDiffsExtension(pi: ExtensionAPI) {
 			"pi-show-diffs",
 			`Mode: ${config.autoApprove ? "auto-approve" : "manual review"}`,
 			`Diff colors: ${config.diffColorMode}`,
+			`Layout: ${config.expandableLayout ? "expandable" : "overlay"}`,
+			`Collapsed height: ${config.collapsedHeight}`,
+			`Expanded height: ${config.expandedHeight}`,
+			`Expanded width: ${config.expandedWidth}`,
 			`Config: ${CONFIG_PATH}`,
 		];
 	}
@@ -47,31 +51,37 @@ export default function showDiffsExtension(pi: ExtensionAPI) {
 		);
 	}
 
-	function setConfig(next: DiffApprovalConfig, ctx?: ExtensionContext, notify = true, message?: string) {
-		config = next;
+	function setConfig(next: Partial<DiffApprovalConfig>, ctx?: ExtensionContext, notify = true, message?: string) {
+		config = normalizeConfig({ ...config, ...next });
 		saveConfig(config);
 		if (!ctx) return;
 		updateStatus(ctx);
 		if (!notify || !ctx.hasUI) return;
-		ctx.ui.notify(
-			message ?? (config.autoApprove ? "Auto-approve is ON for file changes." : "Manual diff review is ON."),
-			"info",
-		);
+		ctx.ui.notify(message ?? getStatusLines().join("\n"), "info");
 	}
 
 	function setAutoApprove(autoApprove: boolean, ctx: ExtensionContext) {
-		setConfig({ ...config, autoApprove }, ctx);
+		setConfig(
+			{ autoApprove },
+			ctx,
+			true,
+			autoApprove ? "Auto-approve is ON for file changes." : "Manual diff review is ON.",
+		);
 	}
 
 	function setDiffColorMode(diffColorMode: DiffColorMode, ctx: ExtensionContext) {
 		setConfig(
-			{ ...config, diffColorMode },
+			{ diffColorMode },
 			ctx,
 			true,
 			diffColorMode === "theme"
 				? "Diff colors now follow your pi theme backgrounds."
 				: "Diff colors now use pi-show-diffs default backgrounds.",
 		);
+	}
+
+	function valuesWithCurrent(currentValue: string, values: string[]) {
+		return values.includes(currentValue) ? values : [currentValue, ...values];
 	}
 
 	async function showApprovalSettings(ctx: ExtensionContext) {
@@ -90,6 +100,34 @@ export default function showDiffsExtension(pi: ExtensionAPI) {
 				values: ["default", "theme"],
 				description: "default = pi-show-diffs red/green backgrounds; theme = active pi theme success/error backgrounds.",
 			},
+			{
+				id: "expandableLayout",
+				label: "Expandable layout",
+				currentValue: config.expandableLayout ? "on" : "off",
+				values: ["off", "on"],
+				description: "When on, the diff opens inline and Ctrl+F expands it to an overlay.",
+			},
+			{
+				id: "collapsedHeight",
+				label: "Collapsed height",
+				currentValue: config.collapsedHeight,
+				values: valuesWithCurrent(config.collapsedHeight, ["20%", "30%", "40%", "50%"]),
+				description: "Inline diff height when expandable layout is enabled.",
+			},
+			{
+				id: "expandedHeight",
+				label: "Expanded height",
+				currentValue: config.expandedHeight,
+				values: valuesWithCurrent(config.expandedHeight, ["80%", "90%", "100%"]),
+				description: "Maximum overlay height after pressing Ctrl+F in expandable layout.",
+			},
+			{
+				id: "expandedWidth",
+				label: "Expanded width",
+				currentValue: config.expandedWidth,
+				values: valuesWithCurrent(config.expandedWidth, ["80%", "90%", "96%", "100%"]),
+				description: "Overlay width after pressing Ctrl+F in expandable layout.",
+			},
 		];
 
 		await ctx.ui.custom((tui, theme, _kb, done) => {
@@ -105,10 +143,22 @@ export default function showDiffsExtension(pi: ExtensionAPI) {
 				},
 				(id, newValue) => {
 					if (id === "autoApprove") {
-						setConfig({ ...config, autoApprove: newValue === "on" }, ctx, false);
+						setConfig({ autoApprove: newValue === "on" }, ctx, false);
 					}
 					if (id === "diffColorMode") {
-						setConfig({ ...config, diffColorMode: newValue === "theme" ? "theme" : "default" }, ctx, false);
+						setConfig({ diffColorMode: newValue === "theme" ? "theme" : "default" }, ctx, false);
+					}
+					if (id === "expandableLayout") {
+						setConfig({ expandableLayout: newValue === "on" }, ctx, false);
+					}
+					if (id === "collapsedHeight") {
+						setConfig({ collapsedHeight: newValue }, ctx, false);
+					}
+					if (id === "expandedHeight") {
+						setConfig({ expandedHeight: newValue }, ctx, false);
+					}
+					if (id === "expandedWidth") {
+						setConfig({ expandedWidth: newValue }, ctx, false);
 					}
 				},
 				() => done(undefined),
@@ -290,6 +340,10 @@ export default function showDiffsExtension(pi: ExtensionAPI) {
 		const decision = await reviewChangePreview(ctx, preview, {
 			allowAfterEdit: true,
 			diffColorMode: config.diffColorMode,
+			expandableLayout: config.expandableLayout,
+			collapsedHeight: config.collapsedHeight,
+			expandedHeight: config.expandedHeight,
+			expandedWidth: config.expandedWidth,
 		});
 
 		if (decision.action === "approve_and_enable_auto") {

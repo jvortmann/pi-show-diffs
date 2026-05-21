@@ -79,6 +79,7 @@ Command args:
 - `←` / `→` — decrease / increase shown context around hunks
 - `[` / `]` - alternate context controls
 - `w` - toggle wrapping
+- `Ctrl+F` - when expandable layout is enabled, open/collapse the expanded overlay
 
 ## Config
 
@@ -91,7 +92,11 @@ Current config shape:
 ```json
 {
   "autoApprove": false,
-  "diffColorMode": "default"
+  "diffColorMode": "default",
+  "expandableLayout": false,
+  "collapsedHeight": "30%",
+  "expandedHeight": "100%",
+  "expandedWidth": "100%"
 }
 ```
 
@@ -99,6 +104,13 @@ Current config shape:
 
 - `default` — use pi-show-diffs predefined diff backgrounds. Dark themes use the original muted red/green; light themes use light-friendly red/green.
 - `theme` — follow your active pi theme's tool success/error backgrounds.
+
+Expandable layout options:
+
+- `expandableLayout` — when `true`, render the diff inline first instead of as a centered overlay.
+- `collapsedHeight` — inline diff height as a percentage string, clamped to `10%`-`100%`.
+- `expandedHeight` — maximum overlay height after `Ctrl+F`, clamped to `10%`-`100%`.
+- `expandedWidth` — overlay width after `Ctrl+F`, clamped to `10%`-`100%`.
 
 ## Notes
 
