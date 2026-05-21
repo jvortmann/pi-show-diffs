@@ -17,13 +17,9 @@ import {
     type StructuredDiffRow,
     type StructuredDiffVisibleItem,
 } from "./diff-utils.js";
+import type { DiffColorMode } from "./config.js";
 import { rebuildPreviewAfterManualEdit, type ChangePreview } from "./preview.js";
-import {
-    detectSyntaxLanguage,
-    getSyntaxTokenColorAnsi,
-    tokenizeSyntaxLine,
-    type SyntaxSegment,
-} from "./syntax-highlight.js";
+import { detectSyntaxLanguage, tokenizeSyntaxLine, type SyntaxSegment } from "./syntax-highlight.js";
 
 export interface DiffDecision {
     action: "approve" | "reject" | "steer" | "approve_and_enable_auto";
@@ -33,6 +29,7 @@ export interface DiffDecision {
 
 interface ReviewOptions {
     allowAfterEdit?: boolean;
+    diffColorMode?: DiffColorMode;
 }
 
 type ViewMode = "split" | "unified";
@@ -88,51 +85,45 @@ const MIN_CONTEXT_LINES = 0;
 const MAX_CONTEXT_LINES = 80;
 const INLINE_CURSOR_OPEN = "\x1b[1;7m";
 const INLINE_CURSOR_CLOSE = "\x1b[0m";
-function getThemeInstance(): any {
-    try {
-        return (globalThis as any)[Symbol.for("@earendil-works/pi-coding-agent:theme")] ?? undefined;
-    } catch {}
-    return undefined;
-}
-
-function getThemeBgAnsi(color: string): string | undefined {
-    return getThemeInstance()?.getBgAnsi?.(color);
-}
-
-function isLightTheme(): boolean {
-    const t = getThemeInstance();
-    if (!t) return false;
-    // Check theme name for explicit light/dark hint
-    const name: string = (t.name ?? "").toLowerCase();
-    if (name.includes("light")) return true;
-    if (name.includes("dark")) return false;
-    // Parse RGB from toolPendingBg ANSI to measure luminance
-    const bg = t.getBgAnsi?.("toolPendingBg");
-    if (typeof bg === "string") {
-        const m = bg.match(/48;2;(\d+);(\d+);(\d+)/);
-        if (m) {
-            const lum = (Number(m[1]) * 299 + Number(m[2]) * 587 + Number(m[3]) * 114) / 1000;
-            return lum > 128;
-        }
-    }
-    return false;
-}
-
-const DARK_DIFF_BG: Record<Exclude<DiffTone, "toolDiffContext">, string> = {
+const DEFAULT_DARK_DIFF_BACKGROUND_ANSI: Record<Exclude<DiffTone, "toolDiffContext">, string> = {
     toolDiffAdded: "\x1b[48;2;58;86;74m",
     toolDiffRemoved: "\x1b[48;2;86;63;67m",
 };
-const LIGHT_DIFF_BG: Record<Exclude<DiffTone, "toolDiffContext">, string> = {
-    toolDiffAdded: "\x1b[48;2;210;228;190m",
-    toolDiffRemoved: "\x1b[48;2;228;200;200m",
+const DEFAULT_LIGHT_DIFF_BACKGROUND_ANSI: Record<Exclude<DiffTone, "toolDiffContext">, string> = {
+    toolDiffAdded: "\x1b[48;2;223;240;216m",
+    toolDiffRemoved: "\x1b[48;2;242;222;222m",
 };
 
-function getDiffBackgrounds(): Record<Exclude<DiffTone, "toolDiffContext">, string> {
-    const fallback = isLightTheme() ? LIGHT_DIFF_BG : DARK_DIFF_BG;
+function isLightTheme(theme: Theme): boolean {
+    const name = (theme.name ?? "").toLowerCase();
+    if (name.includes("light")) return true;
+    if (name.includes("dark")) return false;
+
+    try {
+        const bg = theme.getBgAnsi("toolPendingBg");
+        const match = bg.match(/48;2;(\d+);(\d+);(\d+)/);
+        if (match) {
+            const luminance = (Number(match[1]) * 299 + Number(match[2]) * 587 + Number(match[3]) * 114) / 1000;
+            return luminance > 128;
+        }
+    } catch {}
+
+    return false;
+}
+
+function getDefaultDiffBackgrounds(theme: Theme): Record<Exclude<DiffTone, "toolDiffContext">, string> {
+    return isLightTheme(theme) ? DEFAULT_LIGHT_DIFF_BACKGROUND_ANSI : DEFAULT_DARK_DIFF_BACKGROUND_ANSI;
+}
+
+function getThemeDiffBackgrounds(theme: Theme): Record<Exclude<DiffTone, "toolDiffContext">, string> {
     return {
-        toolDiffAdded: getThemeBgAnsi("toolSuccessBg") ?? fallback.toolDiffAdded,
-        toolDiffRemoved: getThemeBgAnsi("toolErrorBg") ?? fallback.toolDiffRemoved,
+        toolDiffAdded: theme.getBgAnsi("toolSuccessBg"),
+        toolDiffRemoved: theme.getBgAnsi("toolErrorBg"),
     };
+}
+
+function getDiffBackgrounds(theme: Theme, mode: DiffColorMode): Record<Exclude<DiffTone, "toolDiffContext">, string> {
+    return mode === "theme" ? getThemeDiffBackgrounds(theme) : getDefaultDiffBackgrounds(theme);
 }
 
 function clampNumber(value: number, min: number, max: number): number {
@@ -266,6 +257,7 @@ class DiffViewer implements Component {
         private readonly theme: Theme,
         preview: ChangePreview,
         private readonly allowAfterEdit: boolean,
+        private readonly diffColorMode: DiffColorMode,
     ) {
         this.preview = preview;
         this.initialAfterText = preview.afterText;
@@ -658,7 +650,7 @@ class DiffViewer implements Component {
 
     private getBackgroundAnsiForTone(tone: DiffTone): string | undefined {
         if (tone === "toolDiffContext") return undefined;
-        return getDiffBackgrounds()[tone];
+        return getDiffBackgrounds(this.theme, this.diffColorMode)[tone];
     }
 
     private getForegroundForTone(tone: DiffTone): "text" | "toolDiffContext" {
@@ -1381,7 +1373,7 @@ export async function reviewChangePreview(
 
     const decision = await ctx.ui.custom<DiffDecision>(
         (tui, theme, _kb, done) => {
-            const viewer = new DiffViewer(tui, theme, preview, allowAfterEdit);
+            const viewer = new DiffViewer(tui, theme, preview, allowAfterEdit, options.diffColorMode ?? "default");
             const framed = new BorderFrame(viewer, (text) => theme.fg("accent", text));
             const previousShowHardwareCursor = tui.getShowHardwareCursor();
             const syncCursorMode = () => tui.setShowHardwareCursor(viewer.isEditingInline() || previousShowHardwareCursor);

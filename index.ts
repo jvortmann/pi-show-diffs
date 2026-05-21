@@ -3,8 +3,9 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { SettingsList, truncateToWidth, type SettingItem } from "@earendil-works/pi-tui";
 
-import { CONFIG_PATH, loadConfig, saveConfig, type DiffApprovalConfig } from "./src/config.js";
+import { CONFIG_PATH, loadConfig, saveConfig, type DiffApprovalConfig, type DiffColorMode } from "./src/config.js";
 import { detectLineEnding, generateDiffString, restoreLineEndings, stripBom } from "./src/diff-utils.js";
 import { computeChangePreview, type ChangePreview, type PreviewToolName } from "./src/preview.js";
 import { reviewChangePreview } from "./src/ui.js";
@@ -29,6 +30,15 @@ export default function showDiffsExtension(pi: ExtensionAPI) {
 		pendingImmediateApplies.clear();
 	}
 
+	function getStatusLines() {
+		return [
+			"pi-show-diffs",
+			`Mode: ${config.autoApprove ? "auto-approve" : "manual review"}`,
+			`Diff colors: ${config.diffColorMode}`,
+			`Config: ${CONFIG_PATH}`,
+		];
+	}
+
 	function updateStatus(ctx: ExtensionContext) {
 		if (!ctx.hasUI) return;
 		ctx.ui.setStatus(
@@ -37,81 +47,124 @@ export default function showDiffsExtension(pi: ExtensionAPI) {
 		);
 	}
 
-	function setConfig(next: DiffApprovalConfig, ctx?: ExtensionContext, notify = true) {
+	function setConfig(next: DiffApprovalConfig, ctx?: ExtensionContext, notify = true, message?: string) {
 		config = next;
 		saveConfig(config);
 		if (!ctx) return;
 		updateStatus(ctx);
 		if (!notify || !ctx.hasUI) return;
 		ctx.ui.notify(
-			config.autoApprove ? "Auto-approve is ON for file changes." : "Manual diff review is ON.",
+			message ?? (config.autoApprove ? "Auto-approve is ON for file changes." : "Manual diff review is ON."),
 			"info",
 		);
 	}
 
+	function setAutoApprove(autoApprove: boolean, ctx: ExtensionContext) {
+		setConfig({ ...config, autoApprove }, ctx);
+	}
+
+	function setDiffColorMode(diffColorMode: DiffColorMode, ctx: ExtensionContext) {
+		setConfig(
+			{ ...config, diffColorMode },
+			ctx,
+			true,
+			diffColorMode === "theme"
+				? "Diff colors now follow your pi theme backgrounds."
+				: "Diff colors now use pi-show-diffs default backgrounds.",
+		);
+	}
+
+	async function showApprovalSettings(ctx: ExtensionContext) {
+		const items: SettingItem[] = [
+			{
+				id: "autoApprove",
+				label: "Auto-approve",
+				currentValue: config.autoApprove ? "on" : "off",
+				values: ["off", "on"],
+				description: "When on, file changes apply without opening the diff review modal.",
+			},
+			{
+				id: "diffColorMode",
+				label: "Diff colors",
+				currentValue: config.diffColorMode,
+				values: ["default", "theme"],
+				description: "default = pi-show-diffs red/green backgrounds; theme = active pi theme success/error backgrounds.",
+			},
+		];
+
+		await ctx.ui.custom((tui, theme, _kb, done) => {
+			const settingsList = new SettingsList(
+				items,
+				items.length,
+				{
+					label: (text, selected) => (selected ? theme.fg("accent", text) : theme.fg("text", text)),
+					value: (text, selected) => (selected ? theme.fg("accent", text) : theme.fg("muted", text)),
+					description: (text) => theme.fg("dim", text),
+					cursor: theme.fg("accent", "→ "),
+					hint: (text) => theme.fg("dim", text),
+				},
+				(id, newValue) => {
+					if (id === "autoApprove") {
+						setConfig({ ...config, autoApprove: newValue === "on" }, ctx, false);
+					}
+					if (id === "diffColorMode") {
+						setConfig({ ...config, diffColorMode: newValue === "theme" ? "theme" : "default" }, ctx, false);
+					}
+				},
+				() => done(undefined),
+			);
+
+			return {
+				render: (width: number) => [
+					truncateToWidth(theme.fg("accent", theme.bold("pi-show-diffs settings")), width, "", false),
+					truncateToWidth(theme.fg("muted", `Config: ${CONFIG_PATH}`), width, theme.fg("muted", "…"), false),
+					"",
+					...settingsList.render(width),
+				],
+				invalidate: () => settingsList.invalidate(),
+				handleInput: (data: string) => {
+					settingsList.handleInput(data);
+					tui.requestRender();
+				},
+			};
+		});
+	}
+
 	async function handleCommand(args: string, ctx: ExtensionContext) {
 		const command = args.trim().toLowerCase();
+		const commandParts = command.split(/\s+/).filter(Boolean);
 
 		if (command === "on" || command === "enable" || command === "auto") {
-			setConfig({ autoApprove: true }, ctx);
+			setAutoApprove(true, ctx);
 			return;
 		}
 
 		if (command === "off" || command === "disable" || command === "manual") {
-			setConfig({ autoApprove: false }, ctx);
+			setAutoApprove(false, ctx);
 			return;
 		}
 
 		if (command === "toggle") {
-			setConfig({ autoApprove: !config.autoApprove }, ctx);
+			setAutoApprove(!config.autoApprove, ctx);
+			return;
+		}
+
+		if (
+			commandParts.length === 2 &&
+			["color", "colors", "diff-colors", "diff-color-mode"].includes(commandParts[0]!) &&
+			(commandParts[1] === "default" || commandParts[1] === "theme")
+		) {
+			setDiffColorMode(commandParts[1], ctx);
 			return;
 		}
 
 		if (command === "status") {
-			ctx.ui.notify(
-				[
-					"pi-show-diffs",
-					`Mode: ${config.autoApprove ? "auto-approve" : "manual review"}`,
-					`Config: ${CONFIG_PATH}`,
-				].join("\n"),
-				"info",
-			);
+			ctx.ui.notify(getStatusLines().join("\n"), "info");
 			return;
 		}
 
-		const choice = await ctx.ui.select(
-			[
-				"pi-show-diffs",
-				`Mode: ${config.autoApprove ? "auto-approve" : "manual review"}`,
-				`Config: ${CONFIG_PATH}`,
-			].join("\n"),
-			[
-				config.autoApprove ? "Turn auto-approve off" : "Turn auto-approve on",
-				"Show status",
-				"Cancel",
-			],
-		);
-
-		if (choice === "Turn auto-approve on") {
-			setConfig({ autoApprove: true }, ctx);
-			return;
-		}
-
-		if (choice === "Turn auto-approve off") {
-			setConfig({ autoApprove: false }, ctx);
-			return;
-		}
-
-		if (choice === "Show status") {
-			ctx.ui.notify(
-				[
-					"pi-show-diffs",
-					`Mode: ${config.autoApprove ? "auto-approve" : "manual review"}`,
-					`Config: ${CONFIG_PATH}`,
-				].join("\n"),
-				"info",
-			);
-		}
+		await showApprovalSettings(ctx);
+		return;
 	}
 
 	function getRejectionReason(preview: ChangePreview, feedback?: string) {
@@ -236,10 +289,11 @@ export default function showDiffsExtension(pi: ExtensionAPI) {
 
 		const decision = await reviewChangePreview(ctx, preview, {
 			allowAfterEdit: true,
+			diffColorMode: config.diffColorMode,
 		});
 
 		if (decision.action === "approve_and_enable_auto") {
-			setConfig({ autoApprove: true }, ctx);
+			setAutoApprove(true, ctx);
 		}
 
 		if (decision.action === "reject" || decision.action === "steer") {
