@@ -8,6 +8,7 @@ import {
     wrapTextWithAnsi,
     type Component,
     type SizeValue,
+    type KeyId,
 } from "@earendil-works/pi-tui";
 
 import {
@@ -18,7 +19,7 @@ import {
     type StructuredDiffRow,
     type StructuredDiffVisibleItem,
 } from "./diff-utils.js";
-import type { DiffColorMode } from "./config.js";
+import { DEFAULT_KEYBINDINGS, type DiffColorMode, type DiffKeybindings } from "./config.js";
 import { rebuildPreviewAfterManualEdit, type ChangePreview } from "./preview.js";
 import { detectSyntaxLanguage, tokenizeSyntaxLine, type SyntaxSegment } from "./syntax-highlight.js";
 
@@ -35,6 +36,7 @@ interface ReviewOptions {
     collapsedHeight?: string;
     expandedHeight?: string;
     expandedWidth?: string;
+    keybindings?: DiffKeybindings;
 }
 
 type ViewMode = "split" | "unified";
@@ -257,6 +259,7 @@ class DiffViewer implements Component {
     private lastRenderedDiffCache?: { key: string; value: RenderedDiffCache };
     private readonly cursorlessRowCache = new Map<string, RenderedCell>();
     private readonly gapLineCache = new Map<string, string>();
+    private readonly kb: DiffKeybindings;
 
     constructor(
         private readonly tui: { terminal: { rows: number } },
@@ -267,7 +270,9 @@ class DiffViewer implements Component {
         private readonly collapsedHeightPercent: number = 90,
         private readonly expandedHeightPercent: number = 100,
         private readonly expandableLayoutHint: boolean = false,
+        keybindings?: DiffKeybindings,
     ) {
+        this.kb = keybindings ?? DEFAULT_KEYBINDINGS;
         this.preview = preview;
         this.initialAfterText = preview.afterText;
         this.baseDiffModel = preview.diffModel;
@@ -533,6 +538,43 @@ class DiffViewer implements Component {
         this.lastRenderedDiffCache = undefined;
     }
 
+    private buildKeymap(layout: ViewerLayout): Map<string, () => boolean> {
+        const { kb } = this;
+        const actionDefs: Array<[string[] | false, () => boolean]> = [
+            [kb.editInline, () => this.allowAfterEdit ? this.enterInlineEditMode() : false],
+            [kb.scrollUp, () => this.setScrollOffset(this.scrollOffset - 1)],
+            [kb.scrollDown, () => this.setScrollOffset(this.scrollOffset + 1)],
+            [kb.pageUp, () => this.setScrollOffset(this.scrollOffset - layout.viewportHeight)],
+            [kb.pageDown, () => this.setScrollOffset(this.scrollOffset + layout.viewportHeight)],
+            [kb.scrollTop, () => this.setScrollOffset(0)],
+            [kb.scrollBottom, () => this.setScrollOffset(layout.maxScrollOffset)],
+            [kb.nextHunk, () => this.jumpToHunk(layout.currentHunkIndex + 1)],
+            [kb.prevHunk, () => this.jumpToHunk(layout.currentHunkIndex - 1)],
+            [kb.contextLess, () => this.adjustContext(-1)],
+            [kb.contextMore, () => this.adjustContext(1)],
+            [kb.toggleMode, () => this.toggleMode()],
+            [kb.toggleWrap, () => this.toggleWrap()],
+        ];
+        const keymap = new Map<string, () => boolean>();
+        for (const [binding, action] of actionDefs) {
+            if (!binding) continue;
+            for (const key of binding) keymap.set(key, action);
+        }
+        return keymap;
+    }
+
+    private resolveAction(data: string, layout: ViewerLayout): (() => boolean) | undefined {
+        const keymap = this.buildKeymap(layout);
+        const direct = keymap.get(data);
+        if (direct) return direct;
+        for (const [key, action] of keymap) {
+            if (key.includes("+") || key.length > 1) {
+                if (matchesKey(data, key as KeyId)) return action;
+            }
+        }
+        return undefined;
+    }
+
     private getLineNumberWidth(): number {
         if (!this.diffModel) return 4;
         return Math.max(1, String(Math.max(this.diffModel.totalOldLines, this.diffModel.totalNewLines, 1)).length);
@@ -646,31 +688,56 @@ class DiffViewer implements Component {
             ];
         }
 
-        const parts = [
-            "n/p hunks",
-            "↑↓ scroll",
-            "PgUp/PgDn jump",
-            "Home/End edges",
-            "←/→ context",
-            "Tab split/unified",
-            "w wrap",
-            "Enter/y approve",
-            "r/Esc reject",
-            "s steer",
-            "Shift+A auto",
-        ];
-        if (this.allowAfterEdit) {
-            parts.splice(parts.length - 3, 0, "E edit inline");
-        }
-        if (this.expandableLayoutHint) {
-            parts.splice(parts.length - 3, 0, this.expandedView ? "Ctrl+F collapse" : "Ctrl+F expand");
-        }
-        if (!this.diffModel) {
-            parts.splice(0, 2, "↑↓ scroll", "PgUp/PgDn jump");
-        }
-        if (mode !== "split") {
-            parts.splice(4, 1, "[/] context");
-        }
+        const { kb } = this;
+        const keyLabel = (key: string): string => {
+            const labels: Record<string, string> = {
+                up: "↑",
+                down: "↓",
+                left: "←",
+                right: "→",
+                pageUp: "PgUp",
+                pageDown: "PgDn",
+                home: "Home",
+                end: "End",
+                Escape: "Esc",
+                escape: "Esc",
+                Tab: "Tab",
+                tab: "Tab",
+            };
+            return labels[key] ?? key;
+        };
+        const formatBinding = (binding: string[] | false): string | null => {
+            if (!binding || binding.length === 0) return null;
+            return binding.map(keyLabel).join("/");
+        };
+        const fmt = (binding: string[] | false, label: string): string | null => {
+            const keys = formatBinding(binding);
+            return keys ? `${keys} ${label}` : null;
+        };
+        const fmtPair = (first: string[] | false, second: string[] | false, label: string): string | null => {
+            const firstKeys = formatBinding(first);
+            const secondKeys = formatBinding(second);
+            return firstKeys && secondKeys ? `${firstKeys}/${secondKeys} ${label}` : null;
+        };
+        const hasHunks = (this.getNavigationDiff()?.hunks.length ?? 0) > 0;
+        const hasStructuredDiff = Boolean(this.baseDiffModel);
+
+        const parts: string[] = [
+            hasHunks ? fmt(kb.prevHunk, "prev") : null,
+            hasHunks ? fmt(kb.nextHunk, "next") : null,
+            fmtPair(kb.scrollUp, kb.scrollDown, "scroll"),
+            fmtPair(kb.pageUp, kb.pageDown, "jump"),
+            fmtPair(kb.scrollTop, kb.scrollBottom, "edges"),
+            hasStructuredDiff ? fmtPair(kb.contextLess, kb.contextMore, "ctx-/+") : null,
+            hasStructuredDiff ? fmt(kb.toggleMode, "split/unified") : null,
+            fmt(kb.toggleWrap, "wrap"),
+            this.allowAfterEdit ? fmt(kb.editInline, "edit") : null,
+            this.expandableLayoutHint ? fmt(kb.toggleExpand, this.expandedView ? "collapse" : "expand") : null,
+            fmt(kb.approve, "approve"),
+            fmt(kb.reject, "reject"),
+            fmt(kb.steer, "steer"),
+            fmt(kb.autoApprove, "auto"),
+        ].filter((part): part is string => part !== null);
         return [truncateToWidth(this.theme.fg("dim", parts.join(" • ")), width, "", false)];
     }
 
@@ -1287,20 +1354,8 @@ class DiffViewer implements Component {
             return true;
         }
 
-        if ((data === "e" || data === "E") && this.allowAfterEdit) return this.enterInlineEditMode();
-        if (matchesKey(data, "up")) return this.setScrollOffset(this.scrollOffset - 1);
-        if (matchesKey(data, "down")) return this.setScrollOffset(this.scrollOffset + 1);
-        if (matchesKey(data, "pageUp")) return this.setScrollOffset(this.scrollOffset - layout.viewportHeight);
-        if (matchesKey(data, "pageDown")) return this.setScrollOffset(this.scrollOffset + layout.viewportHeight);
-        if (matchesKey(data, "home")) return this.setScrollOffset(0);
-        if (matchesKey(data, "end")) return this.setScrollOffset(layout.maxScrollOffset);
-        if (data === "n") return this.jumpToHunk(layout.currentHunkIndex + 1);
-        if (data === "p") return this.jumpToHunk(layout.currentHunkIndex - 1);
-        if (matchesKey(data, "left") || data === "[") return this.adjustContext(-1);
-        if (matchesKey(data, "right") || data === "]") return this.adjustContext(1);
-        if (matchesKey(data, "tab")) return this.toggleMode();
-        if (data === "w") return this.toggleWrap();
-        return false;
+        const action = this.resolveAction(data, layout);
+        return action ? action() : false;
     }
 
     render(width: number): string[] {
@@ -1372,6 +1427,15 @@ export async function reviewChangePreview(
     const expandedWidthPercent = parsePercentOption(options.expandedWidth, 100);
     const expandedHeight = percentSizeValue(expandedHeightPercent);
     const expandedWidth = percentSizeValue(expandedWidthPercent);
+    const kb = options.keybindings ?? DEFAULT_KEYBINDINGS;
+
+    const matchesBinding = (data: string, binding: string[] | false | undefined): boolean => {
+        if (!binding) return false;
+        return binding.some((key) => {
+            if (key.includes("+") || key.length > 1) return matchesKey(data, key as KeyId);
+            return data === key;
+        });
+    };
     const initialAfterText = preview.afterText;
     let currentPreview = preview;
 
@@ -1444,7 +1508,7 @@ export async function reviewChangePreview(
     if (!expandableLayout) {
         const decision = await ctx.ui.custom<DiffDecision>(
             (tui, theme, _kb, done) => {
-                const viewer = new DiffViewer(tui, theme, currentPreview, allowAfterEdit, diffColorMode);
+                const viewer = new DiffViewer(tui, theme, currentPreview, allowAfterEdit, diffColorMode, 90, 100, false, kb);
                 const framed = new BorderFrame(viewer, (text) => theme.fg("accent", text));
                 const previousShowHardwareCursor = tui.getShowHardwareCursor();
                 const syncCursorMode = () => tui.setShowHardwareCursor(viewer.isEditingInline() || previousShowHardwareCursor);
@@ -1462,19 +1526,19 @@ export async function reviewChangePreview(
                             return;
                         }
 
-                        if (matchesKey(data, "return") || data === "a" || data === "y") {
+                        if (matchesBinding(data, kb.approve)) {
                             done(approvedDecisionFromViewer(viewer, "approve"));
                             return;
                         }
-                        if (matchesKey(data, "escape") || data === "r") {
+                        if (matchesBinding(data, kb.reject)) {
                             done({ action: "reject" });
                             return;
                         }
-                        if (data === "s") {
+                        if (matchesBinding(data, kb.steer)) {
                             done({ action: "steer" });
                             return;
                         }
-                        if (data === "A") {
+                        if (matchesBinding(data, kb.autoApprove)) {
                             done(approvedDecisionFromViewer(viewer, "approve_and_enable_auto"));
                             return;
                         }
@@ -1515,6 +1579,7 @@ export async function reviewChangePreview(
                 collapsedHeightPercent,
                 100,
                 true,
+                kb,
             );
             const framed = new BorderFrame(viewer, (text) => theme.fg("accent", text));
             const previousShowHardwareCursor = tui.getShowHardwareCursor();
@@ -1537,6 +1602,7 @@ export async function reviewChangePreview(
                             expandedHeightPercent,
                             expandedHeightPercent,
                             true,
+                            kb,
                         );
                         overlayViewer = oViewer;
                         oViewer.setExpanded(true);
@@ -1557,24 +1623,24 @@ export async function reviewChangePreview(
                                     return;
                                 }
 
-                                if (matchesKey(data, "ctrl+f")) {
+                                if (matchesBinding(data, kb.toggleExpand)) {
                                     syncCurrentPreviewFromViewer(oViewer);
                                     oDone({ action: "collapse" });
                                     return;
                                 }
-                                if (matchesKey(data, "return") || data === "a" || data === "y") {
+                                if (matchesBinding(data, kb.approve)) {
                                     oDone(approvedDecisionFromViewer(oViewer, "approve"));
                                     return;
                                 }
-                                if (matchesKey(data, "escape") || data === "r") {
+                                if (matchesBinding(data, kb.reject)) {
                                     oDone({ action: "reject" });
                                     return;
                                 }
-                                if (data === "s") {
+                                if (matchesBinding(data, kb.steer)) {
                                     oDone({ action: "steer" });
                                     return;
                                 }
-                                if (data === "A") {
+                                if (matchesBinding(data, kb.autoApprove)) {
                                     oDone(approvedDecisionFromViewer(oViewer, "approve_and_enable_auto"));
                                     return;
                                 }
@@ -1620,23 +1686,23 @@ export async function reviewChangePreview(
                         return;
                     }
 
-                    if (matchesKey(data, "ctrl+f")) {
+                    if (matchesBinding(data, kb.toggleExpand)) {
                         launchOverlay();
                         return;
                     }
-                    if (matchesKey(data, "return") || data === "a" || data === "y") {
+                    if (matchesBinding(data, kb.approve)) {
                         done(approvedDecisionFromViewer(viewer, "approve"));
                         return;
                     }
-                    if (matchesKey(data, "escape") || data === "r") {
+                    if (matchesBinding(data, kb.reject)) {
                         done({ action: "reject" });
                         return;
                     }
-                    if (data === "s") {
+                    if (matchesBinding(data, kb.steer)) {
                         done({ action: "steer" });
                         return;
                     }
-                    if (data === "A") {
+                    if (matchesBinding(data, kb.autoApprove)) {
                         done(approvedDecisionFromViewer(viewer, "approve_and_enable_auto"));
                         return;
                     }
