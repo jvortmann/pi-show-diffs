@@ -37,6 +37,7 @@ export default function showDiffsExtension(pi: ExtensionAPI) {
 			"pi-show-diffs",
 			`Mode: ${config.autoApprove ? t("mode.auto", "auto-approve") : t("mode.manual", "manual review")}`,
 			`Diff colors: ${config.diffColorMode}`,
+			`Diff rail: ${config.showDiffRail ? "on" : "off"}`,
 			`Layout: ${config.expandableLayout ? "expandable" : "overlay"}`,
 			`Collapsed height: ${config.collapsedHeight}`,
 			`Expanded height: ${config.expandedHeight}`,
@@ -190,6 +191,13 @@ export default function showDiffsExtension(pi: ExtensionAPI) {
 				description: "default = pi-show-diffs red/green backgrounds; theme = active pi theme success/error backgrounds.",
 			},
 			{
+				id: "showDiffRail",
+				label: "Diff rail",
+				currentValue: config.showDiffRail ? "on" : "off",
+				values: ["off", "on"],
+				description: "Show a colored rail marker beside each rendered diff line.",
+			},
+			{
 				id: "expandableLayout",
 				label: "Expandable layout",
 				currentValue: config.expandableLayout ? "on" : "off",
@@ -243,6 +251,9 @@ export default function showDiffsExtension(pi: ExtensionAPI) {
 					}
 					if (id === "diffColorMode") {
 						setConfig({ diffColorMode: newValue === "theme" ? "theme" : "default" }, ctx, false);
+					}
+					if (id === "showDiffRail") {
+						setConfig({ showDiffRail: newValue === "on" }, ctx, false);
 					}
 					if (id === "expandableLayout") {
 						setConfig({ expandableLayout: newValue === "on" }, ctx, false);
@@ -449,6 +460,7 @@ export default function showDiffsExtension(pi: ExtensionAPI) {
 		const decision = await reviewChangePreview(ctx, preview, {
 			allowAfterEdit: true,
 			diffColorMode: config.diffColorMode,
+			showDiffRail: config.showDiffRail,
 			expandableLayout: config.expandableLayout,
 			collapsedHeight: config.collapsedHeight,
 			expandedHeight: config.expandedHeight,

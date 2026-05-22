@@ -33,6 +33,7 @@ export interface DiffDecision {
 interface ReviewOptions {
     allowAfterEdit?: boolean;
     diffColorMode?: DiffColorMode;
+    showDiffRail?: boolean;
     expandableLayout?: boolean;
     collapsedHeight?: string;
     expandedHeight?: string;
@@ -88,6 +89,7 @@ interface ViewerLayout {
 }
 
 const TAB_REPLACEMENT = "    ";
+const DIFF_RAIL_MARKER = "▌";
 const MIN_SPLIT_COLUMN_WIDTH = 28;
 const MIN_CONTEXT_LINES = 0;
 const MAX_CONTEXT_LINES = 80;
@@ -165,50 +167,6 @@ function centerAnsiText(text: string, width: number): string {
     return truncateToWidth(`${" ".repeat(leftPadding)}${truncated}`, safeWidth, "", true);
 }
 
-function convertFgAnsiToBgAnsi(ansi: string): string {
-    const match = ansi.match(/\x1b\[([0-9;]*)m/);
-    if (!match) return ansi;
-
-    const params = match[1] ? match[1].split(";").map((value) => Number(value)) : [];
-    const converted: number[] = [];
-
-    for (let i = 0; i < params.length; i++) {
-        const param = params[i]!;
-
-        if (param >= 30 && param <= 37) {
-            converted.push(param + 10);
-            continue;
-        }
-
-        if (param >= 90 && param <= 97) {
-            converted.push(param + 10);
-            continue;
-        }
-
-        if (param === 38) {
-            const mode = params[i + 1];
-            if (mode === 5 && i + 2 < params.length) {
-                converted.push(48, 5, params[i + 2]!);
-                i += 2;
-                continue;
-            }
-            if (mode === 2 && i + 4 < params.length) {
-                converted.push(48, 2, params[i + 2]!, params[i + 3]!, params[i + 4]!);
-                i += 4;
-                continue;
-            }
-        }
-
-        if (param === 39) {
-            converted.push(49);
-            continue;
-        }
-
-        converted.push(param);
-    }
-
-    return `\x1b[${converted.join(";")}m`;
-}
 
 class BorderFrame implements Component {
     constructor(
@@ -268,6 +226,7 @@ class DiffViewer implements Component {
         preview: ChangePreview,
         private readonly allowAfterEdit: boolean,
         private readonly diffColorMode: DiffColorMode,
+        private readonly showDiffRail: boolean = true,
         private readonly collapsedHeightPercent: number = 90,
         private readonly expandedHeightPercent: number = 100,
         private readonly expandableLayoutHint: boolean = false,
@@ -375,6 +334,7 @@ class DiffViewer implements Component {
             mode,
             width,
             lineNumberWidth,
+            this.showDiffRail ? "rail" : "no-rail",
             this.wrapLongLines ? "wrap" : "nowrap",
             split?.leftWidth ?? "",
             split?.rightWidth ?? "",
@@ -899,6 +859,21 @@ class DiffViewer implements Component {
         return output;
     }
 
+    private getCellPrefixWidth(lineNumberWidth: number): number {
+        return lineNumberWidth + 2 + (this.showDiffRail ? 1 : 0);
+    }
+
+    private getRailColorToken(tone: DiffTone): "success" | "error" | "muted" {
+        if (tone === "toolDiffAdded") return "success";
+        if (tone === "toolDiffRemoved") return "error";
+        return "muted";
+    }
+
+    private buildRailMarker(tone: DiffTone): string {
+        if (!this.showDiffRail) return "";
+        return this.theme.fg(this.getRailColorToken(tone), DIFF_RAIL_MARKER);
+    }
+
     private buildCellPrefix(sign: string, lineNumber: number | undefined, lineNumberWidth: number, tone: DiffTone): string {
         const numberText = lineNumber === undefined ? "".padStart(lineNumberWidth, " ") : String(lineNumber).padStart(lineNumberWidth, " ");
         const foreground = this.getForegroundForTone(tone);
@@ -907,7 +882,22 @@ class DiffViewer implements Component {
         const numberStyle = isChangedLine
             ? this.theme.bold(this.theme.fg(foreground, numberText))
             : this.theme.fg("muted", numberText);
-        return `${signText}${numberStyle} `;
+        return `${this.buildRailMarker(tone)}${signText}${numberStyle} `;
+    }
+
+    private buildCellContinuationPrefix(lineNumberWidth: number, tone: DiffTone): string {
+        return `${this.buildRailMarker(tone)}${" ".repeat(lineNumberWidth + 2)}`;
+    }
+
+    private renderEmptySplitCell(cellWidth: number, lineNumberWidth: number): RenderedCell {
+        if (!this.showDiffRail) {
+            return { lines: [" ".repeat(cellWidth)] };
+        }
+
+        const prefixWidth = this.getCellPrefixWidth(lineNumberWidth);
+        const prefix = this.buildCellPrefix(" ", undefined, lineNumberWidth, "toolDiffContext");
+        const fill = " ".repeat(Math.max(0, cellWidth - prefixWidth));
+        return { lines: [truncateToWidth(prefix + fill, cellWidth, "", true)] };
     }
 
     private getCursorColForRow(row: StructuredDiffRow, side: "old" | "new"): number | undefined {
@@ -924,7 +914,7 @@ class DiffViewer implements Component {
         lineNumberWidth: number,
         cursorCol?: number,
     ): RenderedCell {
-        const prefixWidth = lineNumberWidth + 2;
+        const prefixWidth = this.getCellPrefixWidth(lineNumberWidth);
         const contentWidth = Math.max(1, cellWidth - prefixWidth);
         if (side === "new") this.syncInlineEditorLayoutWidth(contentWidth);
         let sign = " ";
@@ -952,7 +942,7 @@ class DiffViewer implements Component {
         }
 
         if (lineNumber === undefined && text.length === 0 && cursorCol === undefined) {
-            return { lines: [" ".repeat(cellWidth)] };
+            return this.renderEmptySplitCell(cellWidth, lineNumberWidth);
         }
 
         const styledText = this.styleDiffText(text, highlights, tone, cursorCol);
@@ -961,7 +951,7 @@ class DiffViewer implements Component {
         let cursorLineIndex: number | undefined;
 
         for (let i = 0; i < wrapped.length; i++) {
-            const prefix = i === 0 ? this.buildCellPrefix(sign, lineNumber, lineNumberWidth, tone) : " ".repeat(prefixWidth);
+            const prefix = i === 0 ? this.buildCellPrefix(sign, lineNumber, lineNumberWidth, tone) : this.buildCellContinuationPrefix(lineNumberWidth, tone);
             const line = truncateToWidth(prefix + wrapped[i]!, cellWidth, "", true);
             if (cursorLineIndex === undefined && line.includes(CURSOR_MARKER)) cursorLineIndex = i;
             result.push(this.applyLineBackground(line, tone));
@@ -984,8 +974,10 @@ class DiffViewer implements Component {
         const lines: string[] = [];
 
         for (let i = 0; i < total; i++) {
-            const left = truncateToWidth(leftCell.lines[i] ?? "", leftWidth, "", true);
-            const right = truncateToWidth(rightCell.lines[i] ?? "", rightWidth, "", true);
+            const leftLine = leftCell.lines[i] ?? this.renderEmptySplitCell(leftWidth, lineNumberWidth).lines[0] ?? "";
+            const rightLine = rightCell.lines[i] ?? this.renderEmptySplitCell(rightWidth, lineNumberWidth).lines[0] ?? "";
+            const left = truncateToWidth(leftLine, leftWidth, "", true);
+            const right = truncateToWidth(rightLine, rightWidth, "", true);
             lines.push(left + gutterText + right);
         }
 
@@ -1012,7 +1004,7 @@ class DiffViewer implements Component {
         lineNumberWidth: number,
         cursorCol?: number,
     ): RenderedCell {
-        const prefixWidth = lineNumberWidth + 2;
+        const prefixWidth = this.getCellPrefixWidth(lineNumberWidth);
         const contentWidth = Math.max(1, width - prefixWidth);
         this.syncInlineEditorLayoutWidth(contentWidth);
         const styledText = this.styleDiffText(text, highlights, tone, cursorCol);
@@ -1021,7 +1013,7 @@ class DiffViewer implements Component {
         let cursorLineIndex: number | undefined;
 
         for (let i = 0; i < wrapped.length; i++) {
-            const prefix = i === 0 ? this.buildCellPrefix(sign, lineNumber, lineNumberWidth, tone) : " ".repeat(prefixWidth);
+            const prefix = i === 0 ? this.buildCellPrefix(sign, lineNumber, lineNumberWidth, tone) : this.buildCellContinuationPrefix(lineNumberWidth, tone);
             const line = truncateToWidth(prefix + wrapped[i]!, width, "", true);
             if (cursorLineIndex === undefined && line.includes(CURSOR_MARKER)) cursorLineIndex = i;
             lines.push(this.applyLineBackground(line, tone));
@@ -1072,6 +1064,7 @@ class DiffViewer implements Component {
             width,
             lineNumberWidth,
             this.wrapLongLines ? "wrap" : "nowrap",
+            this.showDiffRail ? "rail" : "no-rail",
         ].join("|");
         if (this.lastRenderedDiffCache?.key === cacheKey) {
             return this.lastRenderedDiffCache.value;
@@ -1422,6 +1415,7 @@ export async function reviewChangePreview(
     const allowAfterEdit =
         Boolean(options.allowAfterEdit) && preview.beforeText !== undefined && preview.afterText !== undefined;
     const diffColorMode = options.diffColorMode ?? "default";
+    const showDiffRail = options.showDiffRail ?? true;
     const expandableLayout = Boolean(options.expandableLayout);
     const collapsedHeightPercent = parsePercentOption(options.collapsedHeight, 30);
     const expandedHeightPercent = parsePercentOption(options.expandedHeight, 100);
@@ -1515,7 +1509,7 @@ export async function reviewChangePreview(
     if (!expandableLayout) {
         const decision = await ctx.ui.custom<DiffDecision>(
             (tui, theme, _kb, done) => {
-                const viewer = new DiffViewer(tui, theme, currentPreview, allowAfterEdit, diffColorMode, 90, 100, false, kb);
+                const viewer = new DiffViewer(tui, theme, currentPreview, allowAfterEdit, diffColorMode, showDiffRail, 90, 100, false, kb);
                 const framed = new BorderFrame(viewer, (text) => theme.fg("accent", text));
                 const previousShowHardwareCursor = tui.getShowHardwareCursor();
                 const syncCursorMode = () => tui.setShowHardwareCursor(viewer.isEditingInline() || previousShowHardwareCursor);
@@ -1583,6 +1577,7 @@ export async function reviewChangePreview(
                 currentPreview,
                 allowAfterEdit,
                 diffColorMode,
+                showDiffRail,
                 collapsedHeightPercent,
                 100,
                 true,
@@ -1606,6 +1601,7 @@ export async function reviewChangePreview(
                             currentPreview,
                             allowAfterEdit,
                             diffColorMode,
+                            showDiffRail,
                             expandedHeightPercent,
                             expandedHeightPercent,
                             true,

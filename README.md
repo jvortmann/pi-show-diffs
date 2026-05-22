@@ -18,6 +18,7 @@ For normal file changes, the modal uses a split diff viewer with:
 
 - side-by-side **Original** / **Updated** columns
 - syntax-aware ANSI highlighting for common code file types
+- optional colored rail markers beside rendered diff lines
 - collapsed unchanged regions with clear labels
 - hunk-aware navigation
 - unified diff fallback for narrow terminals or preview errors
@@ -94,6 +95,7 @@ Current config shape:
 {
   "autoApprove": false,
   "diffColorMode": "default",
+  "showDiffRail": true,
   "expandableLayout": false,
   "collapsedHeight": "30%",
   "expandedHeight": "100%",
@@ -109,6 +111,10 @@ Current config shape:
 
 - `default` — use pi-show-diffs predefined diff backgrounds. Dark themes use the original muted red/green; light themes use light-friendly red/green.
 - `theme` — follow your active pi theme's tool success/error backgrounds.
+
+Diff marker options:
+
+- `showDiffRail` — when `true`, show a colored `▌` rail marker next to rendered diff lines.
 
 Expandable layout options:
 

@@ -49,6 +49,7 @@ export const DEFAULT_KEYBINDINGS: DiffKeybindings = {
 export interface DiffApprovalConfig {
 	autoApprove: boolean;
 	diffColorMode: DiffColorMode;
+	showDiffRail: boolean;
 	expandableLayout: boolean;
 	collapsedHeight: string;
 	expandedHeight: string;
@@ -59,6 +60,7 @@ export interface DiffApprovalConfig {
 export const DEFAULT_CONFIG: DiffApprovalConfig = {
 	autoApprove: false,
 	diffColorMode: "default",
+	showDiffRail: true,
 	expandableLayout: false,
 	collapsedHeight: "30%",
 	expandedHeight: "100%",
@@ -130,6 +132,7 @@ export function normalizeConfig(config: Partial<DiffApprovalConfig> = {}): DiffA
 	return {
 		autoApprove: config.autoApprove === true,
 		diffColorMode: parseDiffColorMode(config.diffColorMode),
+		showDiffRail: config.showDiffRail !== false,
 		expandableLayout: config.expandableLayout === true,
 		collapsedHeight: parsePercentConfig(config.collapsedHeight, DEFAULT_CONFIG.collapsedHeight),
 		expandedHeight: parsePercentConfig(config.expandedHeight, DEFAULT_CONFIG.expandedHeight),
