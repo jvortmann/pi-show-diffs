@@ -18,6 +18,7 @@ For normal file changes, the modal uses a split diff viewer with:
 
 - side-by-side **Original** / **Updated** columns
 - syntax-aware ANSI highlighting for common code file types
+- vibrant intraline highlights so changed words or characters stand out inside changed lines
 - optional colored rail markers beside rendered diff lines
 - collapsed unchanged regions with clear labels
 - hunk-aware navigation
