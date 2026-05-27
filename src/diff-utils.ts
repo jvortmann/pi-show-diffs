@@ -75,7 +75,7 @@ export interface StructuredDiff {
 }
 
 const DISPLAY_TAB = "    ";
-const INLINE_HIGHLIGHT_CHAR_LIMIT = 800;
+const INLINE_HIGHLIGHT_CHAR_LIMIT = 2_000;
 
 export function detectLineEnding(content: string): "\r\n" | "\n" {
 	const crlfIdx = content.indexOf("\r\n");

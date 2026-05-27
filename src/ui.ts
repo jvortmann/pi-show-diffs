@@ -43,6 +43,7 @@ interface ReviewOptions {
 
 type ViewMode = "split" | "unified";
 type DiffTone = "toolDiffAdded" | "toolDiffRemoved" | "toolDiffContext";
+type ChangedDiffTone = Exclude<DiffTone, "toolDiffContext">;
 
 interface CursorOverlay {
     startOffset: number;
@@ -95,14 +96,31 @@ const MIN_CONTEXT_LINES = 0;
 const MAX_CONTEXT_LINES = 80;
 const INLINE_CURSOR_OPEN = "\x1b[1;7m";
 const INLINE_CURSOR_CLOSE = "\x1b[0m";
-const DEFAULT_DARK_DIFF_BACKGROUND_ANSI: Record<Exclude<DiffTone, "toolDiffContext">, string> = {
+const INLINE_HIGHLIGHT_MAX_CHANGED_RATIO = 0.8;
+const DEFAULT_DARK_DIFF_BACKGROUND_ANSI: Record<ChangedDiffTone, string> = {
     toolDiffAdded: "\x1b[48;2;58;86;74m",
     toolDiffRemoved: "\x1b[48;2;86;63;67m",
 };
-const DEFAULT_LIGHT_DIFF_BACKGROUND_ANSI: Record<Exclude<DiffTone, "toolDiffContext">, string> = {
+const DEFAULT_LIGHT_DIFF_BACKGROUND_ANSI: Record<ChangedDiffTone, string> = {
     toolDiffAdded: "\x1b[48;2;223;240;216m",
     toolDiffRemoved: "\x1b[48;2;242;222;222m",
 };
+
+interface RgbColor {
+    r: number;
+    g: number;
+    b: number;
+}
+
+interface HslColor {
+    h: number;
+    s: number;
+    l: number;
+}
+
+function rgbLuminance(color: RgbColor): number {
+    return (color.r * 299 + color.g * 587 + color.b * 114) / 1000;
+}
 
 function isLightTheme(theme: Theme): boolean {
     const name = (theme.name ?? "").toLowerCase();
@@ -113,27 +131,124 @@ function isLightTheme(theme: Theme): boolean {
         const bg = theme.getBgAnsi("toolPendingBg");
         const match = bg.match(/48;2;(\d+);(\d+);(\d+)/);
         if (match) {
-            const luminance = (Number(match[1]) * 299 + Number(match[2]) * 587 + Number(match[3]) * 114) / 1000;
-            return luminance > 128;
+            return rgbLuminance({
+                r: Number(match[1]),
+                g: Number(match[2]),
+                b: Number(match[3]),
+            }) > 128;
         }
     } catch {}
 
     return false;
 }
 
-function getDefaultDiffBackgrounds(theme: Theme): Record<Exclude<DiffTone, "toolDiffContext">, string> {
+function getDefaultDiffBackgrounds(theme: Theme): Record<ChangedDiffTone, string> {
     return isLightTheme(theme) ? DEFAULT_LIGHT_DIFF_BACKGROUND_ANSI : DEFAULT_DARK_DIFF_BACKGROUND_ANSI;
 }
 
-function getThemeDiffBackgrounds(theme: Theme): Record<Exclude<DiffTone, "toolDiffContext">, string> {
+
+function getThemeDiffBackgrounds(theme: Theme): Record<ChangedDiffTone, string> {
     return {
         toolDiffAdded: theme.getBgAnsi("toolSuccessBg"),
         toolDiffRemoved: theme.getBgAnsi("toolErrorBg"),
     };
 }
 
-function getDiffBackgrounds(theme: Theme, mode: DiffColorMode): Record<Exclude<DiffTone, "toolDiffContext">, string> {
+function getDiffBackgrounds(theme: Theme, mode: DiffColorMode): Record<ChangedDiffTone, string> {
     return mode === "theme" ? getThemeDiffBackgrounds(theme) : getDefaultDiffBackgrounds(theme);
+}
+
+function parseTrueColorBackgroundAnsi(ansi: string): RgbColor | undefined {
+    const match = ansi.match(/\x1b\[48;2;(\d{1,3});(\d{1,3});(\d{1,3})m/);
+    if (!match) return undefined;
+
+    const rgb = {
+        r: Number(match[1]),
+        g: Number(match[2]),
+        b: Number(match[3]),
+    };
+    return [rgb.r, rgb.g, rgb.b].every((channel) => Number.isInteger(channel) && channel >= 0 && channel <= 255)
+        ? rgb
+        : undefined;
+}
+
+function rgbToHsl(color: RgbColor): HslColor {
+    const r = color.r / 255;
+    const g = color.g / 255;
+    const b = color.b / 255;
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    let h = 0;
+    let s = 0;
+    const l = (max + min) / 2;
+
+    if (max !== min) {
+        const d = max - min;
+        s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+        switch (max) {
+            case r:
+                h = (g - b) / d + (g < b ? 6 : 0);
+                break;
+            case g:
+                h = (b - r) / d + 2;
+                break;
+            default:
+                h = (r - g) / d + 4;
+                break;
+        }
+        h /= 6;
+    }
+
+    return { h, s, l };
+}
+
+function hueToRgb(p: number, q: number, t: number): number {
+    let hue = t;
+    if (hue < 0) hue += 1;
+    if (hue > 1) hue -= 1;
+    if (hue < 1 / 6) return p + (q - p) * 6 * hue;
+    if (hue < 1 / 2) return q;
+    if (hue < 2 / 3) return p + (q - p) * (2 / 3 - hue) * 6;
+    return p;
+}
+
+function hslToRgb(color: HslColor): RgbColor {
+    if (color.s === 0) {
+        const channel = Math.round(color.l * 255);
+        return { r: channel, g: channel, b: channel };
+    }
+
+    const q = color.l < 0.5 ? color.l * (1 + color.s) : color.l + color.s - color.l * color.s;
+    const p = 2 * color.l - q;
+    return {
+        r: Math.round(hueToRgb(p, q, color.h + 1 / 3) * 255),
+        g: Math.round(hueToRgb(p, q, color.h) * 255),
+        b: Math.round(hueToRgb(p, q, color.h - 1 / 3) * 255),
+    };
+}
+
+function formatTrueColorBackgroundAnsi(color: RgbColor): string {
+    return `\x1b[48;2;${color.r};${color.g};${color.b}m`;
+}
+
+function intensifyDiffBackground(ansi: string): string | undefined {
+    const rgb = parseTrueColorBackgroundAnsi(ansi);
+    if (!rgb) return undefined;
+
+    const hsl = rgbToHsl(rgb);
+    const isLightBackground = rgbLuminance(rgb) > 128;
+    return formatTrueColorBackgroundAnsi(hslToRgb({
+        h: hsl.h,
+        s: clampNumber(hsl.s * 1.3 + 0.08, 0, 1),
+        l: clampNumber(hsl.l + (isLightBackground ? -0.12 : 0.1), 0.18, 0.86),
+    }));
+}
+
+function getInlineDiffBackgrounds(lineBackgrounds: Record<ChangedDiffTone, string>): Record<ChangedDiffTone, string> {
+    return {
+        toolDiffAdded: intensifyDiffBackground(lineBackgrounds.toolDiffAdded) ?? lineBackgrounds.toolDiffAdded,
+        toolDiffRemoved: intensifyDiffBackground(lineBackgrounds.toolDiffRemoved) ?? lineBackgrounds.toolDiffRemoved,
+    };
 }
 
 function clampNumber(value: number, min: number, max: number): number {
@@ -206,6 +321,8 @@ class DiffViewer implements Component {
     private contextLines: number;
     private readonly syntaxLanguage?: string;
     private readonly syntaxLineCache = new Map<string, SyntaxSegment[]>();
+    private readonly diffBackgrounds: Record<ChangedDiffTone, string>;
+    private readonly diffInlineBackgrounds: Record<ChangedDiffTone, string>;
     private preview: ChangePreview;
     private readonly initialAfterText?: string;
     private fullContextLines: number;
@@ -225,7 +342,7 @@ class DiffViewer implements Component {
         private readonly theme: Theme,
         preview: ChangePreview,
         private readonly allowAfterEdit: boolean,
-        private readonly diffColorMode: DiffColorMode,
+        diffColorMode: DiffColorMode,
         private readonly showDiffRail: boolean = true,
         private readonly collapsedHeightPercent: number = 90,
         private readonly expandedHeightPercent: number = 100,
@@ -233,6 +350,8 @@ class DiffViewer implements Component {
         keybindings?: DiffKeybindings,
     ) {
         this.kb = keybindings ?? DEFAULT_KEYBINDINGS;
+        this.diffBackgrounds = getDiffBackgrounds(theme, diffColorMode);
+        this.diffInlineBackgrounds = getInlineDiffBackgrounds(this.diffBackgrounds);
         this.preview = preview;
         this.initialAfterText = preview.afterText;
         this.baseDiffModel = preview.diffModel;
@@ -714,7 +833,20 @@ class DiffViewer implements Component {
 
     private getBackgroundAnsiForTone(tone: DiffTone): string | undefined {
         if (tone === "toolDiffContext") return undefined;
-        return getDiffBackgrounds(this.theme, this.diffColorMode)[tone];
+        return this.diffBackgrounds[tone];
+    }
+
+    private getInlineBackgroundAnsiForTone(tone: DiffTone): string | undefined {
+        if (tone === "toolDiffContext") return undefined;
+        return this.diffInlineBackgrounds[tone];
+    }
+
+    private applyInlineHighlight(text: string, tone: DiffTone): string {
+        const inlineBackgroundAnsi = this.getInlineBackgroundAnsiForTone(tone);
+        if (!inlineBackgroundAnsi) return this.theme.bold(text);
+
+        const baseBackgroundAnsi = this.getBackgroundAnsiForTone(tone) ?? "\x1b[49m";
+        return `${inlineBackgroundAnsi}${this.theme.bold(text)}${baseBackgroundAnsi}`;
     }
 
     private getForegroundForTone(tone: DiffTone): "text" | "toolDiffContext" {
@@ -763,14 +895,15 @@ class DiffViewer implements Component {
         tone: DiffTone,
         token: SyntaxSegment["token"],
         highlighted: boolean,
+        useInlineBackground: boolean,
     ): string {
         const themeToken = token ? (this.constructor as typeof DiffViewer).TOKEN_TO_THEME[token] : undefined;
-        if (themeToken) {
-            const styled = this.theme.fg(themeToken as any, text);
-            return highlighted ? this.theme.bold(styled) : styled;
-        }
-        const foreground = this.getForegroundForTone(tone);
-        return highlighted ? this.theme.bold(this.theme.fg(foreground, text)) : this.theme.fg(foreground, text);
+        const styled = themeToken
+            ? this.theme.fg(themeToken as any, text)
+            : this.theme.fg(this.getForegroundForTone(tone), text);
+
+        if (!highlighted) return styled;
+        return useInlineBackground ? this.applyInlineHighlight(styled, tone) : this.theme.bold(styled);
     }
 
     private styleDiffText(text: string, ranges: InlineRange[], tone: DiffTone, cursorCol?: number): string {
@@ -789,6 +922,9 @@ class DiffViewer implements Component {
             }))
             .filter((range) => range.end > range.start)
             .sort((a, b) => a.start - b.start || a.end - b.end);
+        const highlightedCharCount = safeRanges.reduce((total, range) => total + range.end - range.start, 0);
+        const useInlineHighlightBackground =
+            highlightedCharCount > 0 && highlightedCharCount < chars.length * INLINE_HIGHLIGHT_MAX_CHANGED_RATIO;
 
         const syntaxSegments = this.getSyntaxSegments(safeText);
         const syntaxRanges: Array<{ start: number; end: number; token: SyntaxSegment["token"] }> = [];
@@ -849,7 +985,7 @@ class DiffViewer implements Component {
                 continue;
             }
 
-            output += this.styleSyntaxSegment(segmentText, tone, token, highlighted);
+            output += this.styleSyntaxSegment(segmentText, tone, token, highlighted, highlighted && useInlineHighlightBackground);
         }
 
         if (clampedCursorCol !== undefined && clampedCursorCol === chars.length) {
