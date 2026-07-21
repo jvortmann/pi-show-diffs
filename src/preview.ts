@@ -2,7 +2,6 @@ import type { EditToolInput, WriteToolInput } from "@earendil-works/pi-coding-ag
 
 import { constants as fsConstants } from "node:fs";
 import { access, readFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import * as path from "node:path";
 
 import {
@@ -15,6 +14,7 @@ import {
 	type StructuredDiff,
 } from "./diff-utils.js";
 import { computeHashlinePreview, type HashlineEditInput } from "./hashline.js";
+import { resolveExistingPath } from "./resolve-existing-path.js";
 
 interface MultiEditOperation {
 	oldText: string;
@@ -46,19 +46,8 @@ export interface ChangePreview {
 	afterText?: string;
 }
 
-function stripAtPrefix(inputPath: string): string {
-	return inputPath.startsWith("@") ? inputPath.slice(1) : inputPath;
-}
-
-function expandTilde(inputPath: string): string {
-	if (inputPath === "~") return homedir();
-	if (inputPath.startsWith("~/")) return path.join(homedir(), inputPath.slice(2));
-	return inputPath;
-}
-
 function resolveToCwd(inputPath: string, cwd: string): string {
-	const expanded = expandTilde(stripAtPrefix(inputPath));
-	return path.isAbsolute(expanded) ? expanded : path.resolve(cwd, expanded);
+	return resolveExistingPath(inputPath, cwd);
 }
 
 function errorPreview(
@@ -191,7 +180,7 @@ async function computeEditPreview(input: EditToolInput | MultiEditToolInput, cwd
 	const absolutePath = resolveToCwd(input.path, cwd);
 
 	try {
-		await access(absolutePath, fsConstants.R_OK);
+		await access(absolutePath, fsConstants.F_OK);
 	} catch {
 		return errorPreview("edit", input.path, absolutePath, `File not found: ${input.path}`, ["Replace exact text"]);
 	}
@@ -330,7 +319,7 @@ async function computeWritePreview(input: WriteToolInput, cwd: string): Promise<
 	let existed = true;
 
 	try {
-		await access(absolutePath, fsConstants.R_OK);
+		await access(absolutePath, fsConstants.F_OK);
 		const rawBuffer = await readFile(absolutePath);
 		const binaryKind = detectBinaryKind(input.path, rawBuffer);
 		if (binaryKind) {
