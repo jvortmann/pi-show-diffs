@@ -38,18 +38,33 @@ function pathVariants(resolved: string): string[] {
 	return [amPm, nfd, curly, nfdCurly];
 }
 
-export function resolveExistingPath(
-	inputPath: string,
-	cwd: string,
-	exists: (candidate: string) => boolean = existsSync,
-): string {
-	const expanded = expandInputPath(inputPath);
-	const base = path.isAbsolute(expanded) ? expanded : path.resolve(cwd, expanded);
+function firstExisting(base: string, exists: (candidate: string) => boolean): string | undefined {
 	if (exists(base)) return base;
-
 	for (const variant of pathVariants(base)) {
 		if (variant !== base && exists(variant)) return variant;
 	}
+	return undefined;
+}
 
-	return base;
+// `cwd` may be an ordered list of candidate roots. Relative paths are resolved
+// against each in turn and the first root where the file exists wins. This lets
+// callers prefer process.cwd() (where the edit/write tools resolve) over pi's
+// project root (ctx.cwd), which differ inside a git worktree.
+export function resolveExistingPath(
+	inputPath: string,
+	cwd: string | string[],
+	exists: (candidate: string) => boolean = existsSync,
+): string {
+	const expanded = expandInputPath(inputPath);
+	if (path.isAbsolute(expanded)) {
+		return firstExisting(expanded, exists) ?? expanded;
+	}
+
+	const cwds = (Array.isArray(cwd) ? cwd : [cwd]).filter((c): c is string => typeof c === "string" && c.length > 0);
+	for (const candidate of cwds) {
+		const found = firstExisting(path.resolve(candidate, expanded), exists);
+		if (found) return found;
+	}
+
+	return path.resolve(cwds[0] ?? process.cwd(), expanded);
 }
