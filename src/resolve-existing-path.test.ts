@@ -34,3 +34,13 @@ test("a genuinely missing file returns the plainly-resolved path", () => {
 	const resolved = resolveExistingPath("scripts/missing.ts", "/project", existsIn([]));
 	assert.equal(resolved, "/project/scripts/missing.ts");
 });
+
+test("with multiple candidate roots, the first root where the file exists wins", () => {
+	// e.g. [process.cwd() = worktree, ctx.cwd = main]; file exists in both, prefer worktree
+	const resolved = resolveExistingPath(
+		"scripts/worktree/lib.sh",
+		["/worktree", "/main"],
+		existsIn(["/worktree/scripts/worktree/lib.sh", "/main/scripts/worktree/lib.sh"]),
+	);
+	assert.equal(resolved, "/worktree/scripts/worktree/lib.sh");
+});
